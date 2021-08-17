@@ -8,4 +8,9 @@ WORKDIR /app/
 RUN chmod a+x bootstrap; ./bootstrap
 RUN chmod a+x configure; ./configure
 RUN make install
-RUN ls; which libeufin-nexus; which libeufin-sandbox; which libeufin-cli
+# needed for stating the UI
+RUN apt-get install -y nodejs yarnpkg
+RUN cd ./frontend/
+RUN yarnpkg --cwd ./frontend/ install
+RUN yarnpkg --cwd ./frontend/ build
+RUN yarnpkg global add serve
