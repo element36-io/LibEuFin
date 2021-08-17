@@ -6,3 +6,4 @@ We added following:
 
 - Dockerfile and push to hub.docker.com
 
+See also original [README](README).
