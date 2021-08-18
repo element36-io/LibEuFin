@@ -8,7 +8,7 @@ WORKDIR /app/
 RUN chmod a+x bootstrap; ./bootstrap
 RUN chmod a+x configure; ./configure
 RUN make install
-# needed for stating the UI
+# needed for stating the UI to use the sandbox
 RUN apt-get install -y nodejs yarnpkg
 RUN cd ./frontend/
 RUN yarnpkg --cwd ./frontend/ install
