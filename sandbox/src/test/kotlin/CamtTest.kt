@@ -3,6 +3,7 @@ import tech.libeufin.sandbox.buildCamtString
 import tech.libeufin.util.RawPayment
 import tech.libeufin.util.XMLUtil
 import kotlin.test.assertTrue
+import java.math.BigDecimal
 
 class CamtTest {
 
@@ -25,10 +26,12 @@ class CamtTest {
         val xml = buildCamtString(
             53,
             "GB33BUKB20201222222222",
-            mutableListOf(payment)
+            mutableListOf(payment),
+            BigDecimal.ZERO,
+            BigDecimal.ZERO
         )
         assertTrue {
-            XMLUtil.validateFromString(xml)
+            XMLUtil.validateFromString(xml.toString())
         }
     }
 }

@@ -10,6 +10,7 @@ RUN chmod a+x configure; ./configure
 RUN make install
 # needed for stating the UI to use the sandbox - LibFinEu/frontend
 RUN apt-get install -y wget curl nodejs yarnpkg npm 
+RUN apt-get install postgresql-client -y
 #  install versions according to LibFinEu/frontend/README.md
 RUN npm install -g n
 RUN n 10.16.0
