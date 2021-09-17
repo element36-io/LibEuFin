@@ -88,7 +88,7 @@ class DBTest {
                     BankAccountTransactionsTable.date.between(
                         parseDashedDate(
                             "1970-01-01"
-                        ).millis(),
+                        ),
                         LocalDateTime.now().millis()
                     )
                 }.firstOrNull()

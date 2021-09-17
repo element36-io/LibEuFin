@@ -10,6 +10,7 @@ if ! git --version >/dev/null; then
   exit 1
 fi
 
+git rm --cached parsing-tests/samples || true
 git submodule sync
 git submodule update --init
 rm -f ./configure
