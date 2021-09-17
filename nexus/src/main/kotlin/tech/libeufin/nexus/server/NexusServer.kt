@@ -61,9 +61,9 @@ import kotlin.system.exitProcess
 fun getFacadeState(type: String, facade: FacadeEntity): JsonNode {
     return transaction {
         when (type) {
-            "taler-wire-gateway" -> {
-                val state = TalerFacadeStateEntity.find {
-                    TalerFacadeStateTable.facade eq facade.id
+            "taler-wire-gateway", "anastasis" -> {
+                val state = FacadeStateEntity.find {
+                    FacadeStateTable.facade eq facade.id
                 }.firstOrNull()
                 if (state == null) throw NexusError(HttpStatusCode.NotFound, "State of facade ${facade.id} not found")
                 val node = jacksonObjectMapper().createObjectNode()
@@ -296,7 +296,10 @@ fun serverMain(host: String, port: Int) {
 
             post("/permissions") {
                 val req = call.receive<ChangePermissionsRequest>()
-                val knownPermissions = listOf("facade.talerwiregateway.history", "facade.talerwiregateway.transfer")
+                val knownPermissions = listOf(
+                    "facade.talerwiregateway.history", "facade.talerwiregateway.transfer",
+                    "facade.anastasis.history"
+                )
                 val permName = req.permission.permissionName.lowercase()
                 if (!knownPermissions.contains(permName)) {
                     throw NexusError(
@@ -560,9 +563,21 @@ fun serverMain(host: String, port: Int) {
                         throw NexusError(HttpStatusCode.NotFound, "unknown bank account")
                     }
                     val holderEnc = URLEncoder.encode(bankAccount.accountHolder, "UTF-8")
+                    val lastSeenBalance = NexusBankBalanceEntity.find {
+                        NexusBankBalancesTable.bankAccount eq bankAccount.id
+                    }.lastOrNull()
                     return@transaction makeJsonObject {
                         prop("defaultBankConnection", bankAccount.defaultBankConnection?.id?.value)
                         prop("accountPaytoUri", "payto://iban/${bankAccount.iban}?receiver-name=$holderEnc")
+                        prop(
+                            "lastSeenBalance",
+                            if (lastSeenBalance != null) {
+                                val sign = if (lastSeenBalance.creditDebitIndicator == "DBIT") "-" else ""
+                                "${sign}${lastSeenBalance.balance}"
+                            } else {
+                                "not downloaded from the bank yet"
+                            }
+                        )
                     }
                 }
                 call.respond(res)
@@ -717,10 +732,8 @@ fun serverMain(host: String, port: Int) {
                         null
                     )
                 }
-                val newTransactions = fetchBankAccountTransactions(client, fetchSpec, accountid)
-                call.respond(makeJsonObject {
-                    prop("newTransactions", newTransactions)
-                })
+                val ingestionResult = fetchBankAccountTransactions(client, fetchSpec, accountid)
+                call.respond(ingestionResult)
                 return@post
             }
 
@@ -900,7 +913,7 @@ fun serverMain(host: String, port: Int) {
                     FacadeShowInfo(
                         name = f.facadeName,
                         type = f.type,
-                        twgBaseUrl = call.url {
+                        baseUrl = call.url {
                             parameters.clear()
                             encodedPath = ""
                             pathComponents("facades", f.facadeName, f.type)
@@ -927,7 +940,7 @@ fun serverMain(host: String, port: Int) {
                             FacadeShowInfo(
                                 name = it.facadeName,
                                 type = it.type,
-                                twgBaseUrl = call.url {
+                                baseUrl = call.url {
                                     parameters.clear()
                                     encodedPath = ""
                                     pathComponents("facades", it.facadeName, it.type)
@@ -959,7 +972,8 @@ fun serverMain(host: String, port: Int) {
                 requireSuperuser(call.request)
                 val body = call.receive<FacadeInfo>()
                 requireValidResourceName(body.name)
-                if (body.type != "taler-wire-gateway") throw NexusError(
+                if (!listOf("taler-wire-gateway", "anastasis").contains(body.type))
+                 throw NexusError(
                     HttpStatusCode.NotImplemented,
                     "Facade type '${body.type}' is not implemented"
                 )
@@ -980,7 +994,7 @@ fun serverMain(host: String, port: Int) {
                     )
                 }
                 transaction {
-                    TalerFacadeStateEntity.new {
+                    FacadeStateEntity.new {
                         bankAccount = body.config.bankAccount
                         bankConnection = body.config.bankConnection
                         reserveTransferLevel = body.config.reserveTransferLevel
@@ -1047,6 +1061,9 @@ fun serverMain(host: String, port: Int) {
             }
             route("/facades/{fcid}/taler-wire-gateway") {
                 talerFacadeRoutes(this, client)
+            }
+            route("/facades/{fcid}/anastasis") {
+                anastasisFacadeRoutes(this, client)
             }
 
             // Hello endpoint.

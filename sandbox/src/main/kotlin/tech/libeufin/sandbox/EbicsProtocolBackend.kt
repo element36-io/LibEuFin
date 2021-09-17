@@ -43,6 +43,7 @@ import tech.libeufin.util.ebics_hev.HEVResponse
 import tech.libeufin.util.ebics_hev.SystemReturnCodeType
 import tech.libeufin.util.ebics_s001.SignatureTypes
 import tech.libeufin.util.ebics_s001.UserSignatureData
+import java.math.BigDecimal
 import java.security.interfaces.RSAPrivateCrtKey
 import java.security.interfaces.RSAPublicKey
 import java.time.Instant
@@ -78,6 +79,10 @@ class EbicsInvalidRequestError : EbicsRequestError(
     "[EBICS_INVALID_REQUEST] Invalid request",
     "060102"
 )
+class EbicsAccountAuthorisationFailed : EbicsRequestError(
+    "[EBICS_ACCOUNT_AUTHORISATION_FAILED] Subscriber's signature didn't verify",
+    "091302"
+)
 
 /**
  * This error is thrown whenever the Subscriber's state is not suitable
@@ -97,9 +102,18 @@ private class EbicsInvalidXmlError : EbicsKeyManagementError(
     "091010"
 )
 
-private class EbicsInvalidOrderType : EbicsRequestError(
+private class EbicsUnsupportedOrderType : EbicsRequestError(
     "[EBICS_UNSUPPORTED_ORDER_TYPE] Order type not supported",
     "091005"
+)
+
+/**
+ * Used here also for "Internal server error".  For example, when the
+ * sandbox itself generates a invalid XML response.
+ */
+class EbicsProcessingError(detail: String) : EbicsRequestError(
+    "[EBICS_PROCESSING_ERROR] $detail",
+    "091116"
 )
 
 private suspend fun ApplicationCall.respondEbicsKeyManagement(
@@ -196,7 +210,13 @@ private fun getRelatedParty(branch: XmlElementBuilder, payment: RawPayment) {
     }
 }
 
-fun buildCamtString(type: Int, subscriberIban: String, history: List<RawPayment>): String {
+fun buildCamtString(
+    type: Int,
+    subscriberIban: String,
+    freshHistory: MutableList<RawPayment>,
+    balancePrcd: BigDecimal, // Balance up to freshHistory (excluded).
+    balanceClbd: BigDecimal
+): SandboxCamt {
     /**
      * ID types required:
      *
@@ -209,10 +229,13 @@ fun buildCamtString(type: Int, subscriberIban: String, history: List<RawPayment>
      * - Proprietary code of the bank transaction
      * - Id of the servicer (Issuer and Code)
      */
-    val now = LocalDateTime.now()
-    val dashedDate = now.toDashedDate()
-    val zonedDateTime = now.toZonedString()
-    return constructXml(indent = true) {
+    val creationTime = getUTCnow()
+    val dashedDate = creationTime.toDashedDate()
+    val zonedDateTime = creationTime.toZonedString()
+    val creationTimeMillis = creationTime.toInstant().toEpochMilli()
+    val messageId = "sandbox-${creationTimeMillis}"
+
+    val camtMessage = constructXml(indent = true) {
         root("Document") {
             attribute("xmlns", "urn:iso:std:iso:20022:tech:xsd:camt.0${type}.001.02")
             attribute("xmlns:xsi", "http://www.w3.org/2001/XMLSchema-instance")
@@ -220,10 +243,10 @@ fun buildCamtString(type: Int, subscriberIban: String, history: List<RawPayment>
                 "xsi:schemaLocation",
                 "urn:iso:std:iso:20022:tech:xsd:camt.0${type}.001.02 camt.0${type}.001.02.xsd"
             )
-            element("BkToCstmrStmt") {
+            element(if (type == 53) "BkToCstmrStmt" else "BkToCstmrAcctRpt") {
                 element("GrpHdr") {
                     element("MsgId") {
-                        text("sandbox-${now.millis()}")
+                        text(messageId)
                     }
                     element("CreDtTm") {
                         text(zonedDateTime)
@@ -286,11 +309,13 @@ fun buildCamtString(type: Int, subscriberIban: String, history: List<RawPayment>
                         }
                         element("Amt") {
                             attribute("Ccy", "EUR")
-                            text(Amount(0).toPlainString())
+                            if (balancePrcd < BigDecimal.ZERO) {
+                                text(balancePrcd.abs().toPlainString())
+                            } else {
+                                text(balancePrcd.toPlainString())
+                            }
                         }
                         element("CdtDbtInd") {
-                            // a temporary value to get the camt to validate.
-                            // Should be fixed along #6269
                             text("CRDT")
                         }
                         element("Dt/Dt") {
@@ -309,18 +334,26 @@ fun buildCamtString(type: Int, subscriberIban: String, history: List<RawPayment>
                             attribute("Ccy", "EUR")
                             // FIXME: the balance computation still not working properly
                             //text(balanceForAccount(subscriberIban).toString())
-                            text("0")
+                            if (balanceClbd < BigDecimal.ZERO) {
+                                text(balanceClbd.abs().toPlainString())
+                            } else {
+                                text(balanceClbd.toPlainString())
+                            }
                         }
                         element("CdtDbtInd") {
                             // a temporary value to get the camt to validate.
                             // Should be fixed along #6269
-                            text("DBIT")
+                            if (balanceClbd < BigDecimal.ZERO) {
+                                text("DBIT")
+                            } else {
+                                text("CRDT")
+                            }
                         }
                         element("Dt/Dt") {
                             text(dashedDate)
                         }
                     }
-                    history.forEach {
+                    freshHistory.forEach {
                         this.element("Ntry") {
                             element("Amt") {
                                 attribute("Ccy", it.currency)
@@ -422,6 +455,43 @@ fun buildCamtString(type: Int, subscriberIban: String, history: List<RawPayment>
             }
         }
     }
+    return SandboxCamt(
+        camtMessage = camtMessage,
+        messageId = messageId,
+        creationTime = creationTimeMillis
+    )
+}
+
+fun getHistoryElementFromTransactionRow(
+    dbRow: BankAccountFreshTransactionEntity
+): RawPayment {
+    return RawPayment(
+        subject = dbRow.transactionRef.subject,
+        creditorIban = dbRow.transactionRef.creditorIban,
+        creditorBic = dbRow.transactionRef.creditorBic,
+        creditorName = dbRow.transactionRef.creditorName,
+        debtorIban = dbRow.transactionRef.debtorIban,
+        debtorBic = dbRow.transactionRef.debtorBic,
+        debtorName = dbRow.transactionRef.debtorName,
+        date = importDateFromMillis(dbRow.transactionRef.date).toDashedDate(),
+        amount = dbRow.transactionRef.amount,
+        currency = dbRow.transactionRef.currency,
+        // The line below produces a value too long (>35 chars),
+        // and dbRow makes the document invalid!
+        // uid = "${dbRow.pmtInfId}-${it.msgId}"
+        uid = dbRow.transactionRef.accountServicerReference,
+        direction = dbRow.transactionRef.direction,
+        pmtInfId = dbRow.transactionRef.pmtInfId
+    )
+}
+
+fun getLastBalance(bankAccount: BankAccountEntity): BigDecimal {
+    val lastStatement = BankAccountStatementEntity.find {
+        BankAccountStatementsTable.bankAccount eq bankAccount.id
+    }.firstOrNull()
+    val lastBalance = if (lastStatement == null) {
+        BigDecimal.ZERO } else { BigDecimal(lastStatement.balanceClbd) }
+    return lastBalance
 }
 
 /**
@@ -429,25 +499,87 @@ fun buildCamtString(type: Int, subscriberIban: String, history: List<RawPayment>
  *
  * @param type 52 or 53.
  */
-private fun constructCamtResponse(type: Int, subscriber: EbicsSubscriberEntity): String {
+private fun constructCamtResponse(
+    type: Int,
+    subscriber: EbicsSubscriberEntity,
+    // fixes #6243
+    dateRange: Pair<Long, Long>?): List<String> {
+
+    if (type != 53 && type != 52) throw EbicsUnsupportedOrderType()
+    val bankAccount = getBankAccountFromSubscriber(subscriber)
+    if (type == 52) {
+        val history = mutableListOf<RawPayment>()
+
+        /**
+         * This block adds all the fresh transactions to the intermediate
+         * history list and returns the last balance that was reported in a
+         * C53 document.  This latter will be the base balance to calculate
+         * the final balance after the fresh transactions.
+         */
+        val lastBalance = transaction {
+            BankAccountFreshTransactionEntity.all().forEach {
+                if (it.transactionRef.account.label == bankAccount.label) {
+                    history.add(getHistoryElementFromTransactionRow(it))
+                }
+            }
+            getLastBalance(bankAccount)  // last reported balance
+        }
+
+        val freshBalance = balanceForAccount(
+            history = history,
+            baseBalance = lastBalance
+        )
+
+        return listOf(
+            buildCamtString(
+                type,
+                bankAccount.iban,
+                history,
+                balancePrcd = lastBalance,
+                balanceClbd = freshBalance
+            ).camtMessage
+        )
+    }
+    SandboxAssert(type == 53, "Didn't catch unsupported Camt type")
+    logger.debug("Finding C$type records")
 
     /**
-     *  Currently unused: see #6243.
-     *
-
-    val dateRange = (header.static.orderDetails?.orderParams as EbicsRequest.StandardOrderParams).dateRange
-    val (start: LocalDateTime, end: LocalDateTime) = if (dateRange != null) {
-        Pair(
-            importDateFromMillis(dateRange.start.toGregorianCalendar().timeInMillis),
-            importDateFromMillis(dateRange.end.toGregorianCalendar().timeInMillis)
-        )
-    } else Pair(parseDashedDate("1970-01-01"), LocalDateTime.now())
-
-    */
-    val bankAccount = getBankAccountFromSubscriber(subscriber)
-    logger.info("getting history for account with iban ${bankAccount.iban}")
-    val history = historyForAccount(bankAccount.iban)
-    return buildCamtString(type, bankAccount.iban, history)
+     * FIXME: when this function throws an exception, it makes a JSON response being responded.
+     * That is bad, because here we're inside a Ebics handler and only XML should
+     * be returned to the requester.  This problem makes the (unhelpful) "bank didn't
+     * return XML" message appear in the Nexus logs.
+     */
+    val ret = mutableListOf<String>()
+    /**
+     * Retrieve all the records whose creation date lies into the
+     * time range given as a function's parameter.
+     */
+    if (dateRange != null) {
+        logger.debug("Querying c$type with date range: $dateRange")
+        BankAccountStatementEntity.find {
+            BankAccountStatementsTable.creationTime.between(
+                dateRange.first,
+                dateRange.second) and(
+                    BankAccountStatementsTable.bankAccount eq bankAccount.id)
+        }.forEach { ret.add(it.xmlMessage) }
+    } else {
+        /**
+         * No time range was given, hence pick the latest statement.
+         */
+        logger.debug("No date range was given for c$type, respond with latest document")
+        BankAccountStatementEntity.find {
+            BankAccountStatementsTable.bankAccount eq bankAccount.id
+        }.lastOrNull().apply {
+            if (this != null) {
+                ret.add(this.xmlMessage)
+            }
+        }
+    }
+    if (ret.size == 0) throw EbicsRequestError(
+        "[EBICS_NO_DOWNLOAD_DATA_AVAILABLE] as Camt $type",
+        "090005"
+    )
+    return ret
 }
 
 /**
@@ -552,41 +684,41 @@ private fun handleCct(paymentRequest: String) {
     val parseResult = parsePain001(paymentRequest)
     transaction {
         try {
-            BankAccountTransactionsTable.insert {
-                it[account] = getBankAccountFromIban(parseResult.debtorIban).id
-                it[creditorIban] = parseResult.creditorIban
-                it[creditorName] = parseResult.creditorName
-                it[creditorBic] = parseResult.creditorBic
-                it[debtorIban] = parseResult.debtorIban
-                it[debtorName] = parseResult.debtorName
-                it[debtorBic] = parseResult.debtorBic
-                it[subject] = parseResult.subject
-                it[amount] = parseResult.amount.toString()
-                it[currency] = parseResult.currency
-                it[date] = Instant.now().toEpochMilli()
-                it[pmtInfId] = parseResult.pmtInfId
-                it[accountServicerReference] = "sandboxref-${getRandomString(16)}"
-                it[direction] = "DBIT"
+            BankAccountTransactionEntity.new {
+                account = getBankAccountFromIban(parseResult.debtorIban)
+                creditorIban = parseResult.creditorIban
+                creditorName = parseResult.creditorName
+                creditorBic = parseResult.creditorBic
+                debtorIban = parseResult.debtorIban
+                debtorName = parseResult.debtorName
+                debtorBic = parseResult.debtorBic
+                subject = parseResult.subject
+                amount = parseResult.amount.toString()
+                currency = parseResult.currency
+                date = getUTCnow().toInstant().toEpochMilli()
+                pmtInfId = parseResult.pmtInfId
+                accountServicerReference = "sandboxref-${getRandomString(16)}"
+                direction = "DBIT"
             }
             val maybeLocalCreditor = BankAccountEntity.find(
                 BankAccountsTable.iban eq parseResult.creditorIban
             ).firstOrNull()
             if (maybeLocalCreditor != null) {
-                BankAccountTransactionsTable.insert {
-                    it[account] = maybeLocalCreditor.id
-                    it[creditorIban] = parseResult.creditorIban
-                    it[creditorName] = parseResult.creditorName
-                    it[creditorBic] = parseResult.creditorBic
-                    it[debtorIban] = parseResult.debtorIban
-                    it[debtorName] = parseResult.debtorName
-                    it[debtorBic] = parseResult.debtorBic
-                    it[subject] = parseResult.subject
-                    it[amount] = parseResult.amount.toString()
-                    it[currency] = parseResult.currency
-                    it[date] = Instant.now().toEpochMilli()
-                    it[pmtInfId] = parseResult.pmtInfId
-                    it[accountServicerReference] = "sandboxref-${getRandomString(16)}"
-                    it[direction] = "CRDT"
+                BankAccountTransactionEntity.new {
+                    account = maybeLocalCreditor
+                    creditorIban = parseResult.creditorIban
+                    creditorName = parseResult.creditorName
+                    creditorBic = parseResult.creditorBic
+                    debtorIban = parseResult.debtorIban
+                    debtorName = parseResult.debtorName
+                    debtorBic = parseResult.debtorBic
+                    subject = parseResult.subject
+                    amount = parseResult.amount.toString()
+                    currency = parseResult.currency
+                    date = getUTCnow().toInstant().toEpochMilli()
+                    pmtInfId = parseResult.pmtInfId
+                    accountServicerReference = "sandboxref-${getRandomString(16)}"
+                    direction = "CRDT"
                 }
             }
         } catch (e: ExposedSQLException) {
@@ -599,24 +731,64 @@ private fun handleCct(paymentRequest: String) {
     }
 }
 
+/**
+ * This handler reports all the fresh transactions, belonging
+ * to the querying subscriber.
+ */
+private fun handleEbicsC52(requestContext: RequestContext): ByteArray {
+    logger.debug("Handling C52 request")
+    // Ignoring any dateRange parameter. (FIXME: clarify whether that is fine.)
+    val report = constructCamtResponse(52, requestContext.subscriber, dateRange = null)
+    SandboxAssert(
+        report.size == 1,
+        "C52 response does not contain one Camt.052 document"
+    )
+    if (!XMLUtil.validateFromString(report[0])) throw EbicsProcessingError(
+        "One statement was found invalid."
+    )
+    return report.map { it.toByteArray() }.zip()
+}
+
 private fun handleEbicsC53(requestContext: RequestContext): ByteArray {
     logger.debug("Handling C53 request")
-    val camt = constructCamtResponse(
+
+    // Fetch date range.
+    val orderParams = requestContext.requestObject.header.static.orderDetails?.orderParams // as EbicsRequest.StandardOrderParams
+    val dateRange = if (orderParams != null) {
+        val standardOrderParams = orderParams as EbicsRequest.StandardOrderParams
+        val start = standardOrderParams.dateRange?.start?.toGregorianCalendar()?.timeInMillis
+        val end = standardOrderParams.dateRange?.end?.toGregorianCalendar()?.timeInMillis
+        if (start == null || end == null) {
+            // only accepting when both start/end are given.
+            null
+        } else {
+            Pair(start, end)
+        }
+    } else {
+        null
+    }
+    /**
+     * By multiple statements, this function is responsible to return
+     * a list of Strings: one for each statement.
+     */
+    val camtStatements = constructCamtResponse(
         53,
-        requestContext.subscriber
+        requestContext.subscriber,
+        dateRange
     )
-   if (!XMLUtil.validateFromString(camt)) throw SandboxError(
-            HttpStatusCode.InternalServerError,
-            "CAMT document was generated invalid"
-   )
-    return listOf(camt.toByteArray(Charsets.UTF_8)).zip()
+    camtStatements.forEach {
+        if (!XMLUtil.validateFromString(it)) throw EbicsProcessingError(
+            "One statement was found invalid."
+        )
+    }
+    return camtStatements.map { it.toByteArray() }.zip()
 }
 
 private suspend fun ApplicationCall.handleEbicsHia(header: EbicsUnsecuredRequest.Header, orderData: ByteArray) {
     val plainOrderData = InflaterInputStream(orderData.inputStream()).use {
         it.readAllBytes()
     }
-    println("hia order data: ${plainOrderData.toString(Charsets.UTF_8)}")
+    println("HIA order data: ${plainOrderData.toString(Charsets.UTF_8)}")
 
     val keyObject = EbicsOrderUtil.decodeOrderDataXml<HIARequestOrderData>(orderData)
     val encPubXml = keyObject.encryptionPubKeyInfo.pubKeyValue.rsaKeyValue
@@ -664,7 +836,7 @@ private suspend fun ApplicationCall.handleEbicsIni(header: EbicsUnsecuredRequest
     val plainOrderData = InflaterInputStream(orderData.inputStream()).use {
         it.readAllBytes()
     }
-    println("ini order data: ${plainOrderData.toString(Charsets.UTF_8)}")
+    println("INI order data: ${plainOrderData.toString(Charsets.UTF_8)}")
 
     val keyObject = EbicsOrderUtil.decodeOrderDataXml<SignatureTypes.SignaturePubKeyOrderData>(orderData)
     val sigPubXml = keyObject.signaturePubKeyInfo.pubKeyValue.rsaKeyValue
@@ -753,11 +925,8 @@ private suspend fun ApplicationCall.handleEbicsHpb(
         }
         this.hostID = ebicsHostInfo.hostID
     }
-
     val compressedOrderData = EbicsOrderUtil.encodeOrderDataXml(hpbRespondeData)
-
     val encryptionResult = CryptoUtil.encryptEbicsE002(compressedOrderData, subscriberKeys.encryptionPublicKey)
-
     respondEbicsKeyManagement("[EBICS_OK]", "000000", "000000", encryptionResult, "OR01")
 }
 
@@ -767,7 +936,7 @@ private suspend fun ApplicationCall.handleEbicsHpb(
 private fun ApplicationCall.ensureEbicsHost(requestHostID: String): EbicsHostPublicInfo {
     return transaction {
         val ebicsHost =
-            EbicsHostEntity.find { EbicsHostsTable.hostID.upperCase() eq requestHostID.toUpperCase() }.firstOrNull()
+            EbicsHostEntity.find { EbicsHostsTable.hostID.upperCase() eq requestHostID.uppercase(Locale.getDefault()) }.firstOrNull()
         if (ebicsHost == null) {
             logger.warn("client requested unknown HostID ${requestHostID}")
             throw EbicsKeyManagementError("[EBICS_INVALID_HOST_ID]", "091011")
@@ -899,7 +1068,6 @@ private fun handleEbicsHkd(requestContext: RequestContext): ByteArray {
                 )
             })
     }
-
     val str = XMLUtil.convertJaxbToString(hkd)
     return str.toByteArray()
 }
@@ -940,16 +1108,13 @@ private fun handleEbicsDownloadTransactionInitialization(requestContext: Request
     val response = when (orderType) {
         "HTD" -> handleEbicsHtd(requestContext)
         "HKD" -> handleEbicsHkd(requestContext)
-        /* Temporarily handling C52/C53 with same logic */
         "C53" -> handleEbicsC53(requestContext)
-        "C52" -> handleEbicsC53(requestContext) // why?
+        "C52" -> handleEbicsC52(requestContext)
         "TSD" -> handleEbicsTSD()
         "PTK" -> handleEbicsPTK()
         else -> throw EbicsInvalidXmlError()
     }
-
     val transactionID = EbicsOrderUtil.generateTransactionId()
-
     val compressedResponse = DeflaterInputStream(response.inputStream()).use {
         it.readAllBytes()
     }
@@ -1096,14 +1261,14 @@ private fun makeRequestContext(requestObject: EbicsRequest): RequestContext {
     val staticHeader = requestObject.header.static
     val requestedHostId = staticHeader.hostID
     val ebicsHost =
-        EbicsHostEntity.find { EbicsHostsTable.hostID.upperCase() eq requestedHostId.toUpperCase() }
+        EbicsHostEntity.find { EbicsHostsTable.hostID.upperCase() eq requestedHostId.uppercase(Locale.getDefault()) }
             .firstOrNull()
     val requestTransactionID = requestObject.header.static.transactionID
     var downloadTransaction: EbicsDownloadTransactionEntity? = null
     var uploadTransaction: EbicsUploadTransactionEntity? = null
     val subscriber = if (requestTransactionID != null) {
         println("finding subscriber by transactionID $requestTransactionID")
-        downloadTransaction = EbicsDownloadTransactionEntity.findById(requestTransactionID.toUpperCase())
+        downloadTransaction = EbicsDownloadTransactionEntity.findById(requestTransactionID.uppercase(Locale.getDefault()))
         if (downloadTransaction != null) {
             downloadTransaction.subscriber
         } else {
@@ -1203,7 +1368,7 @@ suspend fun ApplicationCall.ebicsweb() {
                 // Step 2 of 3:  Validate the signature
                 val verifyResult = XMLUtil.verifyEbicsDocument(requestDocument, requestContext.clientAuthPub)
                 if (!verifyResult) {
-                    throw EbicsInvalidRequestError()
+                    throw EbicsAccountAuthorisationFailed()
                 }
                 // Step 3 of 3:  Generate response
                 val ebicsResponse: EbicsResponse = when (requestObject.header.mutable.transactionPhase) {

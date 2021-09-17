@@ -356,7 +356,7 @@ data class FacadeShowInfo(
     val type: String,
     // Taler wire gateway API base URL.
     // Different from the base URL of the facade.
-    val twgBaseUrl: String,
+    val baseUrl: String,
     val config: JsonNode
 )
 
@@ -441,6 +441,9 @@ data class CurrencyAmount(
     val currency: String,
     val value: BigDecimal // allows calculations
 )
+fun CurrencyAmount.toPlainString(): String {
+    return "${this.currency}:${this.value.toPlainString()}"
+}
 
 data class InitiatedPayments(
     val initiatedPayments: MutableList<PaymentStatus> = mutableListOf()

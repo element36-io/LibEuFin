@@ -66,6 +66,8 @@ data class BankAccountRequest(
 )
 
 data class CamtParams(
-    val iban: String,
-    val type: Int
+    // name/label of the bank account to query.
+    val bankaccount: String,
+    val type: Int,
+    // need range parameter
 )

@@ -61,10 +61,7 @@ import com.github.ajalt.clikt.core.context
 import com.github.ajalt.clikt.parameters.arguments.argument
 import com.github.ajalt.clikt.core.subcommands
 import com.github.ajalt.clikt.output.CliktHelpFormatter
-import com.github.ajalt.clikt.parameters.options.default
-import com.github.ajalt.clikt.parameters.options.flag
-import com.github.ajalt.clikt.parameters.options.option
-import com.github.ajalt.clikt.parameters.options.versionOption
+import com.github.ajalt.clikt.parameters.options.*
 import com.github.ajalt.clikt.parameters.types.int
 import com.google.common.io.Resources
 import execThrowableOrTerminate
@@ -74,23 +71,12 @@ import io.ktor.http.*
 import io.ktor.http.content.*
 import io.ktor.request.*
 import io.ktor.util.date.*
-import tech.libeufin.sandbox.BankAccountTransactionsTable.accountServicerReference
-import tech.libeufin.sandbox.BankAccountTransactionsTable.amount
-import tech.libeufin.sandbox.BankAccountTransactionsTable.creditorBic
-import tech.libeufin.sandbox.BankAccountTransactionsTable.creditorIban
-import tech.libeufin.sandbox.BankAccountTransactionsTable.creditorName
-import tech.libeufin.sandbox.BankAccountTransactionsTable.currency
-import tech.libeufin.sandbox.BankAccountTransactionsTable.date
-import tech.libeufin.sandbox.BankAccountTransactionsTable.debtorBic
-import tech.libeufin.sandbox.BankAccountTransactionsTable.debtorIban
-import tech.libeufin.sandbox.BankAccountTransactionsTable.debtorName
-import tech.libeufin.sandbox.BankAccountTransactionsTable.direction
-import tech.libeufin.sandbox.BankAccountTransactionsTable.pmtInfId
 import tech.libeufin.util.*
 import tech.libeufin.util.ebics_h004.EbicsResponse
 import tech.libeufin.util.ebics_h004.EbicsTypes
 import validatePlainAmount
 import java.net.BindException
+import java.time.ZoneOffset
 import java.util.*
 import kotlin.random.Random
 import kotlin.system.exitProcess
@@ -98,7 +84,11 @@ import kotlin.system.exitProcess
 const val SANDBOX_DB_ENV_VAR_NAME = "LIBEUFIN_SANDBOX_DB_CONNECTION"
 private val logger: Logger = LoggerFactory.getLogger("tech.libeufin.sandbox")
 
-data class SandboxError(val statusCode: HttpStatusCode, val reason: String) : Exception()
+data class SandboxError(
+    val statusCode: HttpStatusCode,
+    val reason: String,
+    val errorCode: LibeufinErrorCode? = null) : Exception()
+
 data class SandboxErrorJson(val error: SandboxErrorDetailJson)
 data class SandboxErrorDetailJson(val type: String, val description: String)
 
@@ -132,6 +122,141 @@ class Config : CliktCommand("Insert one configuration into the database") {
                     allowRegistrations = allowRegistrationsOption
                     hostname = hostnameOption
                 }
+            }
+        }
+    }
+}
+
+/**
+ * This command generates Camt53 statements - for all the bank accounts -
+ * every time it gets run. The statements are only stored them into the database.
+ * The user should then query either via Ebics or via the JSON interface,
+ * in order to retrieve their statements.
+ */
+class Camt053Tick : CliktCommand(
+    "Make a new Camt.053 time tick; all the fresh transactions" +
+            "will be inserted in a new Camt.053 report"
+) {
+    override fun run() {
+        val dbConnString = getDbConnFromEnv(SANDBOX_DB_ENV_VAR_NAME)
+        Database.connect(dbConnString)
+        dbCreateTables(dbConnString)
+        transaction {
+            BankAccountEntity.all().forEach { accountIter->
+                /**
+                 * Map of 'account name' -> fresh history
+                 */
+                val histories = mutableMapOf<
+                        String,
+                        MutableList<RawPayment>>()
+                BankAccountFreshTransactionEntity.all().forEach {
+                    val bankAccountLabel = it.transactionRef.account.label
+                    histories.putIfAbsent(bankAccountLabel, mutableListOf())
+                    val historyIter = histories[bankAccountLabel]
+                    historyIter?.add(getHistoryElementFromTransactionRow(it))
+                }
+                /**
+                 * Resorting the closing (CLBD) balance of the last statement; will
+                 * become the PRCD balance of the _new_ one.
+                 */
+                val lastBalance = getLastBalance(accountIter)
+                val balanceClbd = balanceForAccount(
+                    history = histories[accountIter.label] ?: mutableListOf(),
+                    baseBalance = lastBalance
+                )
+                val camtData = buildCamtString(
+                    53,
+                    accountIter.iban,
+                    histories[accountIter.label] ?: mutableListOf(),
+                    balanceClbd = balanceClbd,
+                    balancePrcd = lastBalance
+                )
+                BankAccountStatementEntity.new {
+                    statementId = camtData.messageId
+                    creationTime = getUTCnow().toInstant().epochSecond
+                    xmlMessage = camtData.camtMessage
+                    bankAccount = accountIter
+                    this.balanceClbd = balanceClbd.toPlainString()
+                }
+            }
+            BankAccountFreshTransactionsTable.deleteAll()
+        }
+    }
+}
+class MakeTransaction : CliktCommand("Wire-transfer money between Sandbox bank accounts") {
+    init {
+        context {
+            helpFormatter = CliktHelpFormatter(showDefaultValues = true)
+        }
+    }
+    private val creditAccount by option(help = "Label of the bank account receiving the payment").required()
+    private val debitAccount by option(help = "Label of the bank account issuing the payment").required()
+    private val amount by argument(help = "Amount, in the \$currency:x.y format")
+    private val subjectArg by argument(name = "subject", help = "Payment's subject")
+
+    override fun run() {
+        val dbConnString = getDbConnFromEnv(SANDBOX_DB_ENV_VAR_NAME)
+        Database.connect(dbConnString)
+        // check accounts exist
+        transaction {
+            val credit = BankAccountEntity.find {
+                BankAccountsTable.label eq creditAccount
+            }.firstOrNull() ?: run {
+                System.err.println("Credit account: $creditAccount, not found")
+                exitProcess(1)
+            }
+            val debit = BankAccountEntity.find {
+                BankAccountsTable.label eq debitAccount
+            }.firstOrNull() ?: run {
+                System.err.println("Debit account: $debitAccount, not found")
+                exitProcess(1)
+            }
+            if (credit.currency != debit.currency) {
+                System.err.println(
+                    "Sandbox has inconsistent state: " +
+                            "currency of credit (${credit.currency}) and debit (${debit.currency}) account differs.")
+                exitProcess(1)
+            }
+            val amountObj = try {
+                parseAmount(amount)
+            } catch (e: Exception) {
+                System.err.println("Amount given not valid: $amount")
+                exitProcess(1)
+            }
+            if (amountObj.currency != credit.currency || amountObj.currency != debit.currency) {
+                System.err.println("Amount's currency (${amountObj.currency}) can't be accepted")
+                exitProcess(1)
+            }
+            val randId = getRandomString(16)
+            BankAccountTransactionEntity.new {
+                creditorIban = credit.iban
+                creditorBic = credit.bic
+                creditorName = credit.name
+                debtorIban = debit.iban
+                debtorBic = debit.bic
+                debtorName = debit.name
+                subject = subjectArg
+                amount = amountObj.amount.toString()
+                currency = amountObj.currency
+                date = getUTCnow().toInstant().toEpochMilli()
+                accountServicerReference = "sandbox-$randId"
+                account = debit
+                direction = "DBIT"
+            }
+            BankAccountTransactionEntity.new {
+                creditorIban = credit.iban
+                creditorBic = credit.bic
+                creditorName = credit.name
+                debtorIban = debit.iban
+                debtorBic = debit.bic
+                debtorName = debit.name
+                subject = subjectArg
+                amount = amountObj.amount.toString()
+                currency = amountObj.currency
+                date = getUTCnow().toInstant().toEpochMilli()
+                accountServicerReference = "sandbox-$randId"
+                account = credit
+                direction = "CRDT"
             }
         }
     }
@@ -232,7 +357,12 @@ class SandboxCommand : CliktCommand(invokeWithoutSubcommand = true, printHelpOnE
 }
 
 fun main(args: Array<String>) {
-    SandboxCommand().subcommands(Serve(), ResetTables(), Config()).main(args)
+    SandboxCommand().subcommands(
+        Serve(),
+        ResetTables(),
+        Config(),
+        MakeTransaction(),
+        Camt053Tick()).main(args)
 }
 
 suspend inline fun <reified T : Any> ApplicationCall.receiveJson(): T {
@@ -304,7 +434,7 @@ fun serverMain(dbName: String, port: Int) {
 
                 val hostAuthPriv = transaction {
                     val host = EbicsHostEntity.find {
-                        EbicsHostsTable.hostID.upperCase() eq call.attributes.get(EbicsHostIdAttribute).toUpperCase()
+                        EbicsHostsTable.hostID.upperCase() eq call.attributes.get(EbicsHostIdAttribute).uppercase()
                     }.firstOrNull() ?: throw SandboxError(
                         HttpStatusCode.InternalServerError,
                         "Requested Ebics host ID not found."
@@ -439,14 +569,28 @@ fun serverMain(dbName: String, port: Int) {
                     val version = "0.0.0-dev.0"
                 })
             }
-
-            // only reason for a post is to hide the iban (to some degree.)
+            /**
+             * For now, only returns the last statement of the
+             * requesting account.
+             */
             post("/admin/payments/camt") {
                 val body = call.receiveJson<CamtParams>()
-                val history = historyForAccount(body.iban)
-                SandboxAssert(body.type == 53, "Only Camt.053 is implemented")
-                val camt53 = buildCamtString(body.type, body.iban, history)
-                call.respondText(camt53, ContentType.Text.Xml, HttpStatusCode.OK)
+                val bankaccount = getAccountFromLabel(body.bankaccount)
+                if(body.type != 53) throw SandboxError(
+                    HttpStatusCode.NotFound,
+                    "Only Camt.053 documents can be generated."
+                )
+                val camtMessage = transaction {
+                    BankAccountStatementEntity.find {
+                        BankAccountStatementsTable.bankAccount eq bankaccount.id
+                    }.lastOrNull()?.xmlMessage ?: throw SandboxError(
+                        HttpStatusCode.NotFound,
+                        "Could not find any statements; please wait next tick"
+                    )
+                }
+                call.respondText(
+                    camtMessage, ContentType.Text.Xml, HttpStatusCode.OK
+                )
                 return@post
             }
 
@@ -468,14 +612,19 @@ fun serverMain(dbName: String, port: Int) {
             get("/admin/bank-accounts/{label}") {
                 val label = ensureNonNull(call.parameters["label"])
                 val ret = transaction {
-                    val account = getAccountFromLabel(label)
-                    val balance = balanceForAccount(account.iban)
+                    val bankAccount = BankAccountEntity.find {
+                        BankAccountsTable.label eq label
+                    }.firstOrNull() ?: throw SandboxError(
+                        HttpStatusCode.NotFound,
+                        "Account '$label' not found"
+                    )
+                    val balance = balanceForAccount(bankAccount)
                     object {
-                        val balance = "${account.currency}:${balance}"
-                        val iban = account.iban
-                        val bic = account.bic
-                        val name = account.name
-                        val label = account.label
+                        val balance = "${bankAccount.currency}:${balance}"
+                        val iban = bankAccount.iban
+                        val bic = bankAccount.bic
+                        val name = bankAccount.name
+                        val label = bankAccount.label
                     }
                 }
                 call.respond(ret)
@@ -502,56 +651,25 @@ fun serverMain(dbName: String, port: Int) {
                 transaction {
                     val account = getBankAccountFromLabel(accountLabel)
                     val randId = getRandomString(16)
-                    BankAccountTransactionsTable.insert {
-                        it[creditorIban] = account.iban
-                        it[creditorBic] = account.bic
-                        it[creditorName] = account.name
-                        it[debtorIban] = body.debtorIban
-                        it[debtorBic] = reqDebtorBic
-                        it[debtorName] = body.debtorName
-                        it[subject] = body.subject
-                        it[amount] = body.amount
-                        it[currency] = account.currency
-                        it[date] = Instant.now().toEpochMilli()
-                        it[accountServicerReference] = "sandbox-$randId"
-                        it[BankAccountTransactionsTable.account] = account.id
-                        it[direction] = "CRDT"
+                    BankAccountTransactionEntity.new {
+                        creditorIban = account.iban
+                        creditorBic = account.bic
+                        creditorName = account.name
+                        debtorIban = body.debtorIban
+                        debtorBic = reqDebtorBic
+                        debtorName = body.debtorName
+                        subject = body.subject
+                        amount = body.amount
+                        currency = account.currency
+                        date = getUTCnow().toInstant().toEpochMilli()
+                        accountServicerReference = "sandbox-$randId"
+                        this.account = account
+                        direction = "CRDT"
                     }
                 }
                 call.respond(object {})
             }
-
-            /**
-             * Adds a new payment to the book.
-             *
-             * FIXME:  This API is deprecated, but still used
-             * in some test cases.  It should be removed entirely.
-             */
-            post("/admin/payments") {
-                val body = call.receiveJson<RawPayment>()
-                val randId = getRandomString(16)
-                transaction {
-                    val localIban = if (body.direction == "DBIT") body.debtorIban else body.creditorIban
-                    BankAccountTransactionsTable.insert {
-                        it[creditorIban] = body.creditorIban
-                        it[creditorBic] = body.creditorBic
-                        it[creditorName] = body.creditorName
-                        it[debtorIban] = body.debtorIban
-                        it[debtorBic] = body.debtorBic
-                        it[debtorName] = body.debtorName
-                        it[subject] = body.subject
-                        it[amount] = body.amount
-                        it[currency] = body.currency
-                        it[date] = Instant.now().toEpochMilli()
-                        it[accountServicerReference] = "sandbox-$randId"
-                        it[account] = getBankAccountFromIban(localIban).id
-                        it[direction] = body.direction
-                    }
-                }
-                call.respondText("Payment created")
-                return@post
-            }
-
+            
             /**
              * Associates a new bank account with an existing Ebics subscriber.
              */
@@ -565,6 +683,13 @@ fun serverMain(dbName: String, port: Int) {
                         body.subscriber.userID,
                         body.subscriber.partnerID,
                         body.subscriber.hostID
+                    )
+                    val check = BankAccountEntity.find {
+                        BankAccountsTable.iban eq body.iban or(BankAccountsTable.label eq body.label)
+                    }.count()
+                    if (check > 0) throw SandboxError(
+                        HttpStatusCode.BadRequest,
+                        "Either IBAN or account label were already taken; please choose fresh ones"
                     )
                     subscriber.bankAccount = BankAccountEntity.new {
                         iban = body.iban
@@ -600,33 +725,34 @@ fun serverMain(dbName: String, port: Int) {
                     val accountLabel = ensureNonNull(call.parameters["label"])
                     transaction {
                         val account = getBankAccountFromLabel(accountLabel)
-                        BankAccountTransactionsTable.select { BankAccountTransactionsTable.account eq account.id }
-                            .forEach {
-                                ret.payments.add(
-                                    PaymentInfo(
-                                        accountLabel = account.label,
-                                        creditorIban = it[creditorIban],
-                                        // FIXME: We need to modify the transactions table to have an actual
-                                        // account servicer reference here.
-                                        accountServicerReference = it[accountServicerReference],
-                                        paymentInformationId = it[pmtInfId],
-                                        debtorIban = it[debtorIban],
-                                        subject = it[BankAccountTransactionsTable.subject],
-                                        date = GMTDate(it[date]).toHttpDate(),
-                                        amount = it[amount],
-                                        creditorBic = it[creditorBic],
-                                        creditorName = it[creditorName],
-                                        debtorBic = it[debtorBic],
-                                        debtorName = it[debtorName],
-                                        currency = it[currency],
-                                        creditDebitIndicator = when (it[direction]) {
-                                            "CRDT" -> "credit"
-                                            "DBIT" -> "debit"
-                                            else -> throw Error("invalid direction")
-                                        }
-                                    )
+                        BankAccountTransactionEntity.find {
+                            BankAccountTransactionsTable.account eq account.id
+                        }.forEach {
+                            ret.payments.add(
+                                PaymentInfo(
+                                    accountLabel = account.label,
+                                    creditorIban = it.creditorIban,
+                                    // FIXME: We need to modify the transactions table to have an actual
+                                    // account servicer reference here.
+                                    accountServicerReference = it.accountServicerReference,
+                                    paymentInformationId = it.pmtInfId,
+                                    debtorIban = it.debtorIban,
+                                    subject = it.subject,
+                                    date = GMTDate(it.date).toHttpDate(),
+                                    amount = it.amount,
+                                    creditorBic = it.creditorBic,
+                                    creditorName = it.creditorName,
+                                    debtorBic = it.debtorBic,
+                                    debtorName = it.debtorName,
+                                    currency = it.currency,
+                                    creditDebitIndicator = when (it.direction) {
+                                        "CRDT" -> "credit"
+                                        "DBIT" -> "debit"
+                                        else -> throw Error("invalid direction")
+                                    }
                                 )
-                            }
+                            )
+                        }
                     }
                 }
                 call.respond(ret)
@@ -640,40 +766,40 @@ fun serverMain(dbName: String, port: Int) {
 
                     run {
                         val amount = Random.nextLong(5, 25)
-                        BankAccountTransactionsTable.insert {
-                            it[creditorIban] = account.iban
-                            it[creditorBic] = account.bic
-                            it[creditorName] = account.name
-                            it[debtorIban] = "DE64500105178797276788"
-                            it[debtorBic] = "DEUTDEBB101"
-                            it[debtorName] = "Max Mustermann"
-                            it[subject] = "sample transaction $transactionReferenceCrdt"
-                            it[BankAccountTransactionsTable.amount] = amount.toString()
-                            it[currency] = account.currency
-                            it[date] = Instant.now().toEpochMilli()
-                            it[accountServicerReference] = transactionReferenceCrdt
-                            it[BankAccountTransactionsTable.account] = account.id
-                            it[direction] = "CRDT"
+                        BankAccountTransactionEntity.new {
+                            creditorIban = account.iban
+                            creditorBic = account.bic
+                            creditorName = account.name
+                            debtorIban = "DE64500105178797276788"
+                            debtorBic = "DEUTDEBB101"
+                            debtorName = "Max Mustermann"
+                            subject = "sample transaction $transactionReferenceCrdt"
+                            this.amount = amount.toString()
+                            currency = account.currency
+                            date = getUTCnow().toInstant().toEpochMilli()
+                            accountServicerReference = transactionReferenceCrdt
+                            this.account = account
+                            direction = "CRDT"
                         }
                     }
 
                     run {
                         val amount = Random.nextLong(5, 25)
 
-                        BankAccountTransactionsTable.insert {
-                            it[debtorIban] = account.iban
-                            it[debtorBic] = account.bic
-                            it[debtorName] = account.name
-                            it[creditorIban] = "DE64500105178797276788"
-                            it[creditorBic] = "DEUTDEBB101"
-                            it[creditorName] = "Max Mustermann"
-                            it[subject] = "sample transaction $transactionReferenceDbit"
-                            it[BankAccountTransactionsTable.amount] = amount.toString()
-                            it[currency] = account.currency
-                            it[date] = Instant.now().toEpochMilli()
-                            it[accountServicerReference] = transactionReferenceDbit
-                            it[BankAccountTransactionsTable.account] = account.id
-                            it[direction] = "DBIT"
+                        BankAccountTransactionEntity.new {
+                            debtorIban = account.iban
+                            debtorBic = account.bic
+                            debtorName = account.name
+                            creditorIban = "DE64500105178797276788"
+                            creditorBic = "DEUTDEBB101"
+                            creditorName = "Max Mustermann"
+                            subject = "sample transaction $transactionReferenceDbit"
+                            this.amount = amount.toString()
+                            currency = account.currency
+                            date = getUTCnow().toInstant().toEpochMilli()
+                            accountServicerReference = transactionReferenceDbit
+                            this.account = account
+                            direction = "DBIT"
                         }
                     }
                 }
@@ -782,7 +908,28 @@ fun serverMain(dbName: String, port: Int) {
              * Serves all the Ebics requests.
              */
             post("/ebicsweb") {
-                call.ebicsweb()
+                try {
+                    call.ebicsweb()
+                }
+                /**
+                 * Those errors were all detected by the bank's logic.
+                 */
+                catch (e: SandboxError) {
+                    // Should translate to EBICS error code.
+                    when(e.errorCode) {
+                        LibeufinErrorCode.LIBEUFIN_EC_INVALID_STATE -> throw EbicsProcessingError("Invalid bank state.")
+                        LibeufinErrorCode.LIBEUFIN_EC_INCONSISTENT_STATE -> throw EbicsProcessingError("Inconsistent bank state.")
+                        else -> throw EbicsProcessingError("Unknown LibEuFin error code: ${e.errorCode}.")
+                    }
+
+                }
+                /**
+                 * An error occurred, but it wasn't explicitly thrown by the bank.
+                 */
+                catch (e: Exception) {
+                    throw EbicsProcessingError("Unmanaged error: $e")
+                }
+
             }
         }
     }
