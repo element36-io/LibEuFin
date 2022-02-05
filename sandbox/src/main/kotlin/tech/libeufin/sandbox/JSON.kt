@@ -19,9 +19,24 @@
 
 package tech.libeufin.sandbox
 
+import com.fasterxml.jackson.annotation.JsonProperty
 import tech.libeufin.util.PaymentInfo
-import tech.libeufin.util.RawPayment
 
+data class WithdrawalRequest(
+    /**
+     * Note: the currency is redundant, because at each point during
+     * the execution the Demobank should have a handle of the currency.
+     */
+    val amount: String // $CURRENCY:X.Y
+)
+
+data class Demobank(
+    val currency: String,
+    val name: String,
+    val userDebtLimit: Int,
+    val bankDebtLimit: Int,
+    val allowRegistrations: Boolean
+)
 /**
  * Used to show the list of Ebics hosts that exist
  * in the system.
@@ -43,29 +58,82 @@ data class AccountTransactions(
 )
 
 /**
- * Used to create AND show one Ebics subscriber in the system.
+ * Used to create AND show one Ebics subscriber.
  */
-data class EbicsSubscriberElement(
+data class EbicsSubscriberInfo(
+    val hostID: String,
+    val partnerID: String,
+    val userID: String,
+    val systemID: String? = null,
+    val demobankAccountLabel: String
+)
+
+data class AdminGetSubscribers(
+    var subscribers: MutableList<EbicsSubscriberInfo> = mutableListOf()
+)
+
+/**
+ * The following definition is obsolete because it
+ * doesn't allow to specify a demobank that will host
+ * the Ebics subscriber.  */
+data class EbicsSubscriberObsoleteApi(
     val hostID: String,
     val partnerID: String,
     val userID: String,
     val systemID: String? = null
 )
-
-data class AdminGetSubscribers(
-    var subscribers: MutableList<EbicsSubscriberElement> = mutableListOf()
-)
-
-data class BankAccountRequest(
-    val subscriber: EbicsSubscriberElement,
+data class EbicsBankAccountRequest(
+    val subscriber: EbicsSubscriberObsoleteApi,
     val iban: String,
     val bic: String,
     val name: String,
     val label: String,
-    val currency: String
+)
+
+data class CustomerRegistration(
+    val username: String,
+    val password: String,
+    val isPublic: Boolean = false
+)
+
+// Could be used as a general bank account info container.
+data class PublicAccountInfo(
+    val balance: String,
+    val iban: String,
+    // Name / Label of the bank account _and_ of the
+    // Sandbox username that owns it.
+    val accountLabel: String
+    // more ..?
 )
 
 data class CamtParams(
-    val iban: String,
-    val type: Int
+    // name/label of the bank account to query.
+    val bankaccount: String,
+    val type: Int,
+    // need range parameter
+)
+
+data class TalerWithdrawalStatus(
+    val selection_done: Boolean,
+    val transfer_done: Boolean,
+    val amount: String,
+    val wire_types: List<String> = listOf("iban"),
+    val suggested_exchange: String? = null,
+    val sender_wire: String? = null,
+    val aborted: Boolean
+)
+
+data class TalerWithdrawalSelection(
+    val reserve_pub: String,
+    val selected_exchange: String?
+)
+
+data class NewTransactionReq(
+    /**
+     * This Payto address must contain the wire transfer
+     * subject among its query parameters -- 'message' parameter.
+     */
+    val paytoUri: String,
+    // $currency:X.Y format
+    val amount: String?
 )

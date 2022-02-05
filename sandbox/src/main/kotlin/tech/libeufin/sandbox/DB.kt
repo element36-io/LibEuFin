@@ -19,6 +19,7 @@
 
 package tech.libeufin.sandbox
 
+import io.ktor.http.*
 import org.jetbrains.exposed.dao.Entity
 import org.jetbrains.exposed.dao.EntityClass
 import org.jetbrains.exposed.dao.IntEntity
@@ -32,6 +33,7 @@ import org.jetbrains.exposed.dao.id.LongIdTable
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.transactions.TransactionManager
 import org.jetbrains.exposed.sql.transactions.transaction
+import tech.libeufin.util.internalServerError
 import java.sql.Connection
 
 /**
@@ -87,38 +89,43 @@ enum class KeyState {
     RELEASED
 }
 
-object SandboxConfigsTable : LongIdTable() {
+object DemobankConfigsTable : LongIdTable() {
     val currency = text("currency")
     val allowRegistrations = bool("allowRegistrations")
     val bankDebtLimit = integer("bankDebtLimit")
     val usersDebtLimit = integer("usersDebtLimit")
-    val hostname = text("hostname")
+    val name = text("hostname")
+    val suggestedExchangeBaseUrl = text("suggestedExchangeBaseUrl").nullable()
+    val suggestedExchangePayto = text("suggestedExchangePayto").nullable()
 }
 
-class SandboxConfigEntity(id: EntityID<Long>) : LongEntity(id) {
-    companion object : LongEntityClass<SandboxConfigEntity>(SandboxConfigsTable)
-    var currency by SandboxConfigsTable.currency
-    var allowRegistrations by SandboxConfigsTable.allowRegistrations
-    var bankDebtLimit by SandboxConfigsTable.bankDebtLimit
-    var usersDebtLimit by SandboxConfigsTable.usersDebtLimit
-    var hostname by SandboxConfigsTable.hostname
+class DemobankConfigEntity(id: EntityID<Long>) : LongEntity(id) {
+    companion object : LongEntityClass<DemobankConfigEntity>(DemobankConfigsTable)
+    var currency by DemobankConfigsTable.currency
+    var allowRegistrations by DemobankConfigsTable.allowRegistrations
+    var bankDebtLimit by DemobankConfigsTable.bankDebtLimit
+    var usersDebtLimit by DemobankConfigsTable.usersDebtLimit
+    var name by DemobankConfigsTable.name
+    var suggestedExchangeBaseUrl by DemobankConfigsTable.suggestedExchangeBaseUrl
+    var suggestedExchangePayto by DemobankConfigsTable.suggestedExchangePayto
 }
 
-object SandboxUsersTable : LongIdTable() {
+/**
+ * Users who are allowed to log into the demo bank.
+ * Created via the /demobanks/{demobankname}/register endpoint.
+ */
+object DemobankCustomersTable : LongIdTable() {
     val username = text("username")
-    val passwordHash = text("password")
-    val superuser = bool("superuser") // admin
-    val bankAccount = reference("bankAccount", BankAccountsTable)
+    val passwordHash = text("passwordHash")
+    val name = text("name").nullable()
 }
 
-class SandboxUserEntity(id: EntityID<Long>) : LongEntity(id) {
-    companion object : LongEntityClass<SandboxUserEntity>(SandboxUsersTable)
-    var username by SandboxUsersTable.username
-    var passwordHash by SandboxUsersTable.passwordHash
-    var superuser by SandboxUsersTable.superuser
-    var bankAccount by BankAccountEntity referencedOn SandboxUsersTable.bankAccount
+class DemobankCustomerEntity(id: EntityID<Long>) : LongEntity(id) {
+    companion object : LongEntityClass<DemobankCustomerEntity>(DemobankCustomersTable)
+    var username by DemobankCustomersTable.username
+    var passwordHash by DemobankCustomersTable.passwordHash
+    var name by DemobankCustomersTable.name
 }
-
 
 /**
  * This table stores RSA public keys of subscribers.
@@ -147,7 +154,6 @@ object EbicsHostsTable : IntIdTable() {
 
 class EbicsHostEntity(id: EntityID<Int>) : IntEntity(id) {
     companion object : IntEntityClass<EbicsHostEntity>(EbicsHostsTable)
-
     var hostId by EbicsHostsTable.hostID
     var ebicsVersion by EbicsHostsTable.ebicsVersion
     var signaturePrivateKey by EbicsHostsTable.signaturePrivateKey
@@ -168,14 +174,11 @@ object EbicsSubscribersTable : IntIdTable() {
     val authenticationKey = reference("authorizationKey", EbicsSubscriberPublicKeysTable).nullable()
     val nextOrderID = integer("nextOrderID")
     val state = enumeration("state", SubscriberState::class)
-    // setting as nullable to integrate this change more seamlessly into the current
-    // implementation.  Can be removed eventually.
     val bankAccount = reference("bankAccount", BankAccountsTable).nullable()
 }
 
 class EbicsSubscriberEntity(id: EntityID<Int>) : IntEntity(id) {
     companion object : IntEntityClass<EbicsSubscriberEntity>(EbicsSubscribersTable)
-
     var userId by EbicsSubscribersTable.userId
     var partnerId by EbicsSubscribersTable.partnerId
     var systemId by EbicsSubscribersTable.systemId
@@ -232,7 +235,6 @@ object EbicsUploadTransactionsTable : IdTable<String>() {
 
 class EbicsUploadTransactionEntity(id: EntityID<String>) : Entity<String>(id) {
     companion object : EntityClass<String, EbicsUploadTransactionEntity>(EbicsUploadTransactionsTable)
-
     var orderType by EbicsUploadTransactionsTable.orderType
     var orderID by EbicsUploadTransactionsTable.orderID
     var host by EbicsHostEntity referencedOn EbicsUploadTransactionsTable.host
@@ -256,7 +258,6 @@ object EbicsOrderSignaturesTable : IntIdTable() {
 
 class EbicsOrderSignatureEntity(id: EntityID<Int>) : IntEntity(id) {
     companion object : IntEntityClass<EbicsOrderSignatureEntity>(EbicsOrderSignaturesTable)
-
     var orderID by EbicsOrderSignaturesTable.orderID
     var orderType by EbicsOrderSignaturesTable.orderType
     var partnerID by EbicsOrderSignaturesTable.partnerID
@@ -269,23 +270,36 @@ class EbicsOrderSignatureEntity(id: EntityID<Int>) : IntEntity(id) {
  * FIXME: document this.
  */
 object EbicsUploadTransactionChunksTable : IdTable<String>() {
-    override val id =
-        text("transactionID").entityId()
+    override val id = text("transactionID").entityId()
     val chunkIndex = integer("chunkIndex")
     val chunkContent = blob("chunkContent")
 }
 
+// FIXME: Is upload chunking not implemented somewhere?!
 class EbicsUploadTransactionChunkEntity(id: EntityID<String>) : Entity<String>(id) {
     companion object : EntityClass<String, EbicsUploadTransactionChunkEntity>(EbicsUploadTransactionChunksTable)
-
     var chunkIndex by EbicsUploadTransactionChunksTable.chunkIndex
     var chunkContent by EbicsUploadTransactionChunksTable.chunkContent
+}
+
+
+/**
+ * Holds those transactions that aren't yet reported in a Camt.053 document.
+ * After reporting those, the table gets emptied.  Rows are merely references
+ * to the main ledger.
+ */
+object BankAccountFreshTransactionsTable : LongIdTable() {
+    val transactionRef = reference("transaction", BankAccountTransactionsTable)
+}
+class BankAccountFreshTransactionEntity(id: EntityID<Long>) : LongEntity(id) {
+    companion object : LongEntityClass<BankAccountFreshTransactionEntity>(BankAccountFreshTransactionsTable)
+    var transactionRef by BankAccountTransactionEntity referencedOn BankAccountFreshTransactionsTable.transactionRef
 }
 
 /**
  * Table that keeps all the payments initiated by PAIN.001.
  */
-object BankAccountTransactionsTable : Table() {
+object BankAccountTransactionsTable : LongIdTable() {
     val creditorIban = text("creditorIban")
     val creditorBic = text("creditorBic").nullable()
     val creditorName = text("creditorName")
@@ -293,26 +307,70 @@ object BankAccountTransactionsTable : Table() {
     val debtorBic = text("debtorBic").nullable()
     val debtorName = text("debtorName")
     val subject = text("subject")
+    /**
+     * Amount is a BigInt in String form.
+     */
     val amount = text("amount")
     val currency = text("currency")
     val date = long("date")
-
     /**
      * Unique ID for this payment within the bank account.
      */
     val accountServicerReference = text("accountServicerReference")
-
     /**
      * Payment information ID, which is a reference to the payment initiation
-     * that triggered this transaction.  Typically only available with outgoing transactions.
+     * that triggered this transaction.  Typically, only available with outgoing transactions.
      */
     val pmtInfId = text("pmtInfId").nullable()
     val direction = text("direction")
+    /**
+     * Bank account of the party whose 'direction' refers.  This version allows
+     * only both parties to be registered at the running Sandbox.
+     */
     val account = reference("account", BankAccountsTable)
 
-    // It can't be unique (anymore), because one table might contain
-    // the same payment twice: once as DBIT and once as CRDT.
-    // override val primaryKey = PrimaryKey(pmtInfId)
+    /**
+     * Redundantly storing the demobank for query convenience.
+     */
+    val demobank = reference("demobank", DemobankConfigsTable)
+}
+
+class BankAccountTransactionEntity(id: EntityID<Long>) : LongEntity(id) {
+    companion object : LongEntityClass<BankAccountTransactionEntity>(BankAccountTransactionsTable) {
+        override fun new(init: BankAccountTransactionEntity.() -> Unit): BankAccountTransactionEntity {
+            /**
+             * Fresh transactions are those that wait to be included in a
+             * "history" report, likely a Camt.5x message.  The "fresh transactions"
+             * table keeps a list of such transactions.
+             */
+            val freshTx = super.new(init)
+            BankAccountFreshTransactionsTable.insert {
+                it[transactionRef] = freshTx.id
+            }
+            /**
+             * The bank account involved in this transaction points to
+             * it as the "last known" transaction, to make it easier to
+             * build histories that depend on such record.
+             */
+            freshTx.account.lastTransaction = freshTx
+            return freshTx
+        }
+    }
+    var creditorIban by BankAccountTransactionsTable.creditorIban
+    var creditorBic by BankAccountTransactionsTable.creditorBic
+    var creditorName by BankAccountTransactionsTable.creditorName
+    var debtorIban by BankAccountTransactionsTable.debtorIban
+    var debtorBic by BankAccountTransactionsTable.debtorBic
+    var debtorName by BankAccountTransactionsTable.debtorName
+    var subject by BankAccountTransactionsTable.subject
+    var amount by BankAccountTransactionsTable.amount
+    var currency by BankAccountTransactionsTable.currency
+    var date by BankAccountTransactionsTable.date
+    var accountServicerReference by BankAccountTransactionsTable.accountServicerReference
+    var pmtInfId by BankAccountTransactionsTable.pmtInfId
+    var direction by BankAccountTransactionsTable.direction
+    var account by BankAccountEntity referencedOn BankAccountTransactionsTable.account
+    var demobank by DemobankConfigEntity referencedOn BankAccountTransactionsTable.demobank
 }
 
 /**
@@ -321,10 +379,29 @@ object BankAccountTransactionsTable : Table() {
  */
 object BankAccountsTable : IntIdTable() {
     val iban = text("iban")
-    val bic = text("bic")
-    val name = text("name")
+    val bic = text("bic").default("SANDBOXX")
     val label = text("label").uniqueIndex("accountLabelIndex")
-    val currency = text("currency")
+    /**
+     * This field is the username of the customer that owns the
+     * bank account.  Some actors do not have a customer registered,
+     * but they can still specify their "username" - merely a label
+     * that identifies their operations - to this field.
+     *
+     * Two examples of such actors are: "admin" and "bank".  Note:
+     * "admin" cannot act as the bank, because it participates in
+     * tests and therefore should not have its balance affected by
+     * awarding sign-up bonuses.
+     */
+    val owner = text("owner")
+    val isPublic = bool("isPublic").default(false)
+    val demoBank = reference("demoBank", DemobankConfigsTable)
+
+    /**
+     * Point to the last transaction related to this account, regardless
+     * of it being credit or debit.  This reference helps to construct
+     * history results that start from / depend on the last transaction.
+     */
+    val lastTransaction = reference("lastTransaction", BankAccountTransactionsTable).nullable()
 }
 
 class BankAccountEntity(id: EntityID<Int>) : IntEntity(id) {
@@ -332,9 +409,11 @@ class BankAccountEntity(id: EntityID<Int>) : IntEntity(id) {
 
     var iban by BankAccountsTable.iban
     var bic by BankAccountsTable.bic
-    var name by BankAccountsTable.name
     var label by BankAccountsTable.label
-    var currency by BankAccountsTable.currency
+    var owner by BankAccountsTable.owner
+    var isPublic by BankAccountsTable.isPublic
+    var demoBank by DemobankConfigEntity referencedOn BankAccountsTable.demoBank
+    var lastTransaction by BankAccountTransactionEntity optionalReferencedOn BankAccountsTable.lastTransaction
 }
 
 object BankAccountStatementsTable : IntIdTable() {
@@ -342,6 +421,53 @@ object BankAccountStatementsTable : IntIdTable() {
     val creationTime = long("creationTime")
     val xmlMessage = text("xmlMessage")
     val bankAccount = reference("bankAccount", BankAccountsTable)
+    /**
+     * Storing the closing balance (= the one obtained after all
+     * the transactions mentioned in the statement), a.k.a. CLBD.
+     * For statement S, this value will act as the opening balance
+     * (a.k.a. PRCD) of statement S+1.
+     */
+    val balanceClbd = text("balanceClbd") // normally, a BigDecimal
+}
+
+class BankAccountStatementEntity(id: EntityID<Int>) : IntEntity(id) {
+    companion object : IntEntityClass<BankAccountStatementEntity>(BankAccountStatementsTable)
+    var statementId by BankAccountStatementsTable.statementId
+    var creationTime by BankAccountStatementsTable.creationTime
+    var xmlMessage by BankAccountStatementsTable.xmlMessage
+    var bankAccount by BankAccountEntity referencedOn BankAccountStatementsTable.bankAccount
+    var balanceClbd by BankAccountStatementsTable.balanceClbd
+}
+
+object TalerWithdrawalsTable : LongIdTable() {
+    val wopid = uuid("wopid").autoGenerate()
+    val amount = text("amount") // $currency:x.y
+    /**
+     * Turns to true after the wallet gave the reserve public key
+     * and the exchange details to the bank.
+     */
+    val selectionDone = bool("selectionDone").default(false)
+    val aborted = bool("aborted").default(false)
+    /**
+     * Turns to true after the wire transfer to the exchange bank account
+     * gets completed _on the bank's side_.  This does never guarantees that
+     * the payment arrived at the exchange's bank yet.
+     */
+    val confirmationDone = bool("confirmationDone").default(false)
+    val reservePub = text("reservePub").nullable()
+    val selectedExchangePayto = text("selectedExchangePayto").nullable()
+    val walletBankAccount = reference("walletBankAccount", BankAccountsTable)
+}
+class TalerWithdrawalEntity(id: EntityID<Long>) : LongEntity(id) {
+    companion object : LongEntityClass<TalerWithdrawalEntity>(TalerWithdrawalsTable)
+    var wopid by TalerWithdrawalsTable.wopid
+    var selectionDone by TalerWithdrawalsTable.selectionDone
+    var confirmationDone by TalerWithdrawalsTable.confirmationDone
+    var reservePub by TalerWithdrawalsTable.reservePub
+    var selectedExchangePayto by TalerWithdrawalsTable.selectedExchangePayto
+    var amount by TalerWithdrawalsTable.amount
+    var walletBankAccount by BankAccountEntity referencedOn TalerWithdrawalsTable.walletBankAccount
+    var aborted by TalerWithdrawalsTable.aborted
 }
 
 object BankAccountReportsTable : IntIdTable() {
@@ -350,6 +476,8 @@ object BankAccountReportsTable : IntIdTable() {
     val xmlMessage = text("xmlMessage")
     val bankAccount = reference("bankAccount", BankAccountsTable)
 }
+
+
 
 fun dbDropTables(dbConnectionString: String) {
     Database.connect(dbConnectionString)
@@ -362,11 +490,12 @@ fun dbDropTables(dbConnectionString: String) {
             EbicsUploadTransactionChunksTable,
             EbicsOrderSignaturesTable,
             BankAccountTransactionsTable,
+            BankAccountFreshTransactionsTable,
             BankAccountsTable,
             BankAccountReportsTable,
             BankAccountStatementsTable,
-            SandboxConfigsTable,
-            SandboxUsersTable
+            DemobankConfigsTable,
+            TalerWithdrawalsTable
         )
     }
 }
@@ -376,8 +505,7 @@ fun dbCreateTables(dbConnectionString: String) {
     TransactionManager.manager.defaultIsolationLevel = Connection.TRANSACTION_SERIALIZABLE
     transaction {
         SchemaUtils.create(
-            SandboxConfigsTable,
-            SandboxUsersTable,
+            DemobankConfigsTable,
             EbicsSubscribersTable,
             EbicsHostsTable,
             EbicsDownloadTransactionsTable,
@@ -385,9 +513,12 @@ fun dbCreateTables(dbConnectionString: String) {
             EbicsUploadTransactionChunksTable,
             EbicsOrderSignaturesTable,
             BankAccountTransactionsTable,
+            BankAccountFreshTransactionsTable,
             BankAccountsTable,
             BankAccountReportsTable,
-            BankAccountStatementsTable
+            BankAccountStatementsTable,
+            TalerWithdrawalsTable,
+            DemobankCustomersTable
         )
     }
 }

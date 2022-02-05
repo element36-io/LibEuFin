@@ -70,7 +70,6 @@ private data class EbicsFetchSpec(
     val orderParams: EbicsOrderParams
 )
 
-// Moved eventually in a tucked "camt" file.
 fun storeCamt(bankConnectionId: String, camt: String, historyType: String) {
     val camt53doc = XMLUtil.parseStringIntoDom(camt)
     val msgId = camt53doc.pickStringWithRootNs("/*[1]/*[1]/root:GrpHdr/root:MsgId")
@@ -104,12 +103,25 @@ private suspend fun fetchEbicsC5x(
     subscriberDetails: EbicsClientSubscriberDetails
 ) {
     logger.debug("Requesting $historyType")
-    val response = doEbicsDownloadTransaction(
-        client,
-        subscriberDetails,
-        historyType,
-        orderParams
-    )
+    val response = try {
+        doEbicsDownloadTransaction(
+            client,
+            subscriberDetails,
+            historyType,
+            orderParams
+        )
+    } catch (e: EbicsProtocolError) {
+        /**
+         * This error type is not an actual error in this handler.
+         */
+        if (e.ebicsTechnicalCode == EbicsReturnCode.EBICS_NO_DOWNLOAD_DATA_AVAILABLE) {
+            logger.info("Could not find new transactions to download")
+            return
+        }
+        // re-throw in any other error case.
+        throw e
+    }
+
     when (historyType) {
         "C52" -> {
         }
@@ -122,7 +134,7 @@ private suspend fun fetchEbicsC5x(
     when (response) {
         is EbicsDownloadSuccessResult -> {
             response.orderData.unzipWithLambda {
-                logger.debug("Camt entry: ${it.second}")
+                logger.debug("Camt entry (filename (in the Zip archive): ${it.first}): ${it.second}")
                 storeCamt(bankConnectionId, it.second, historyType)
             }
         }
@@ -302,7 +314,7 @@ fun Route.ebicsBankConnectionRoutes(client: HttpClient) {
     }
 
     post("/download/{msgtype}") {
-        val orderType = requireNotNull(call.parameters["msgtype"]).toUpperCase(Locale.ROOT)
+        val orderType = requireNotNull(call.parameters["msgtype"]).uppercase(Locale.ROOT)
         if (orderType.length != 3) {
             throw NexusError(HttpStatusCode.BadRequest, "ebics order type must be three characters")
         }
@@ -596,7 +608,7 @@ class EbicsBankConnectionProtocol: BankConnectionProtocol {
             it.add(Paragraph("Verschlüsselungsschlüssel").setFontSize(24f))
             writeCommon(it)
             it.add(Paragraph("Öffentlicher Schlüssel (Public encryption key)"))
-            writeKey(it, ebicsSubscriber.customerSignPriv)
+            writeKey(it, ebicsSubscriber.customerEncPriv)
             it.add(Paragraph("\n"))
             writeSigLine(it)
         }
@@ -795,6 +807,13 @@ class EbicsBankConnectionProtocol: BankConnectionProtocol {
         }
         if (subscriber.ebicsIniState == EbicsInitState.UNKNOWN || subscriber.ebicsHiaState == EbicsInitState.UNKNOWN) {
             if (tentativeHpb(client, connId)) {
+                /**
+                 * NOTE/FIXME: in case the HIA/INI did succeed (state is UNKNOWN but Sandbox
+                 * has somehow the keys), here the state should be set to SENT, because later -
+                 * when the Sandbox will respond to the INI/HIA requests - we'll get a
+                 * EBICS_INVALID_USER_OR_USER_STATE.  Hence, the state will never switch to
+                 * SENT again.
+                 */
                 return
             }
         }
@@ -815,7 +834,7 @@ class EbicsBankConnectionProtocol: BankConnectionProtocol {
         val hpbData = try {
             doEbicsHpbRequest(client, subscriber)
         } catch (e: EbicsProtocolError) {
-            logger.warn("failed hpb request", e)
+            logger.warn("failed HPB request", e)
             null
         }
         transaction {

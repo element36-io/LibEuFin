@@ -33,6 +33,7 @@ import tech.libeufin.nexus.iso20022.parseCamtMessage
 import tech.libeufin.nexus.server.FetchSpecJson
 import tech.libeufin.nexus.server.Pain001Data
 import tech.libeufin.nexus.server.requireBankConnection
+import tech.libeufin.nexus.server.toPlainString
 import tech.libeufin.util.XMLUtil
 import java.time.Instant
 import java.time.ZonedDateTime
@@ -123,9 +124,33 @@ private fun findDuplicate(bankAccountId: String, acctSvcrRef: String): NexusBank
     }
 }
 
-fun processCamtMessage(bankAccountId: String, camtDoc: Document, code: String): Int {
+/**
+ * NOTE: this type can be used BOTH for one Camt document OR
+ * for a set of those.
+ */
+data class CamtTransactionsCount(
+    /**
+     * Number of transactions that are new to the database.
+     * Note that transaction T can be downloaded multiple times;
+     * for example, once in a C52 and once - maybe a day later -
+     * in a C53.  The second time, the transaction is not considered
+     * 'new'.
+     */
+    val newTransactions: Int,
+
+    /**
+     * Total number of transactions that were included in a report
+     * or a statement.
+     */
+    val downloadedTransactions: Int
+)
+
+fun processCamtMessage(
+    bankAccountId: String, camtDoc: Document, code: String
+): CamtTransactionsCount {
     logger.info("processing CAMT message")
     var newTransactions = 0
+    var downloadedTransactions = 0
     transaction {
         val acct = NexusBankAccountEntity.findByName(bankAccountId)
         if (acct == null) {
@@ -138,6 +163,29 @@ fun processCamtMessage(bankAccountId: String, camtDoc: Document, code: String): 
             newTransactions = -1
             return@transaction
         }
+        res.reports.forEach {
+            NexusAssert(
+                it.account.iban == acct.iban,
+                "Neuxs hit a report or statement of a wrong IBAN!"
+            )
+            it.balances.forEach { b ->
+                var clbdCount = 0
+                if (b.type == "CLBD") {
+                    clbdCount++
+                    NexusBankBalanceEntity.new {
+                        bankAccount = acct
+                        balance = b.amount.toPlainString()
+                        creditDebitIndicator = b.creditDebitIndicator.name
+                        date = b.date
+                    }
+                }
+                if (clbdCount == 0) {
+                    logger.warn("The bank didn't return ANY CLBD balances," +
+                            " in the message: ${res.messageId}.  Please clarify!")
+                }
+            }
+        }
+
         val stamp =
             ZonedDateTime.parse(res.creationDateTime, DateTimeFormatter.ISO_DATE_TIME).toInstant().toEpochMilli()
         when (code) {
@@ -156,6 +204,7 @@ fun processCamtMessage(bankAccountId: String, camtDoc: Document, code: String): 
         }
         val entries = res.reports.map { it.entries }.flatten()
         logger.info("found ${entries.size} money movements")
+        downloadedTransactions = entries.size
         txloop@ for (entry in entries) {
             val singletonBatchedTransaction = entry.batches?.get(0)?.batchTransactions?.get(0)
                 ?: throw NexusError(
@@ -204,15 +253,19 @@ fun processCamtMessage(bankAccountId: String, camtDoc: Document, code: String): 
             }
         }
     }
-    return newTransactions
+    return CamtTransactionsCount(
+        newTransactions = newTransactions,
+        downloadedTransactions = downloadedTransactions
+    )
 }
 
 /**
  * Create new transactions for an account based on bank messages it
  * did not see before.
  */
-fun ingestBankMessagesIntoAccount(bankConnectionId: String, bankAccountId: String): Int {
+fun ingestBankMessagesIntoAccount(bankConnectionId: String, bankAccountId: String): CamtTransactionsCount {
     var totalNew = 0
+    var downloadedTransactions = 0
     transaction {
         val conn =
             NexusBankConnectionEntity.find { NexusBankConnectionsTable.connectionId eq bankConnectionId }.firstOrNull()
@@ -229,17 +282,22 @@ fun ingestBankMessagesIntoAccount(bankConnectionId: String, bankAccountId: Strin
                     (NexusBankMessagesTable.id greater acct.highestSeenBankMessageSerialId)
         }.orderBy(Pair(NexusBankMessagesTable.id, SortOrder.ASC)).forEach {
             val doc = XMLUtil.parseStringIntoDom(it.message.bytes.toString(Charsets.UTF_8))
-            val newTransactions = processCamtMessage(bankAccountId, doc, it.code)
-            if (newTransactions == -1) {
+            val processingResult = processCamtMessage(bankAccountId, doc, it.code)
+            if (processingResult.newTransactions == -1) {
                 it.errors = true
                 return@forEach
             }
             lastId = it.id.value
-            totalNew += newTransactions
+            totalNew += processingResult.newTransactions
+            downloadedTransactions += processingResult.downloadedTransactions
         }
         acct.highestSeenBankMessageSerialId = lastId
     }
-    return totalNew
+    // return totalNew
+    return CamtTransactionsCount(
+        newTransactions = totalNew,
+        downloadedTransactions = downloadedTransactions
+    )
 }
 
 /**
@@ -285,7 +343,9 @@ fun addPaymentInitiation(paymentData: Pain001Data, debtorAccount: NexusBankAccou
     }
 }
 
-suspend fun fetchBankAccountTransactions(client: HttpClient, fetchSpec: FetchSpecJson, accountId: String): Int {
+suspend fun fetchBankAccountTransactions(
+    client: HttpClient, fetchSpec: FetchSpecJson, accountId: String
+): CamtTransactionsCount {
     val res = transaction {
         val acct = NexusBankAccountEntity.findByName(accountId)
         if (acct == null) {
@@ -306,7 +366,7 @@ suspend fun fetchBankAccountTransactions(client: HttpClient, fetchSpec: FetchSpe
             val connectionName = conn.connectionId
         }
     }
-
+    // abstracts over the connection type: ebics or others.
     getConnectionPlugin(res.connectionType).fetchTransactions(
         fetchSpec,
         client,
@@ -314,9 +374,11 @@ suspend fun fetchBankAccountTransactions(client: HttpClient, fetchSpec: FetchSpe
         accountId
     )
 
-    val newTransactions = ingestBankMessagesIntoAccount(res.connectionName, accountId)
-    ingestTalerTransactions(accountId)
-    return newTransactions
+    val ingestionResult = ingestBankMessagesIntoAccount(res.connectionName, accountId)
+    ingestFacadeTransactions(accountId, "taler-wire-gateway", ::talerFilter, ::maybeTalerRefunds)
+    ingestFacadeTransactions(accountId, "anastasis", ::anastasisFilter, null)
+
+    return ingestionResult
 }
 
 fun importBankAccount(call: ApplicationCall, offeredBankAccountId: String, nexusBankAccountId: String) {

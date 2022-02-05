@@ -1,13 +1,10 @@
-import org.jetbrains.exposed.dao.id.EntityID
 import org.jetbrains.exposed.sql.SchemaUtils
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.transactions.transaction
 import org.junit.Test
-import tech.libeufin.sandbox.BankAccountTransactionsTable
-import tech.libeufin.sandbox.BankAccountsTable
-import tech.libeufin.sandbox.balanceForAccount
+import tech.libeufin.sandbox.*
 import tech.libeufin.util.millis
-import java.math.BigInteger
+import java.math.BigDecimal
 import java.time.LocalDateTime
 
 class BalanceTest {
@@ -16,80 +13,85 @@ class BalanceTest {
     fun balanceTest() {
         withTestDatabase {
             transaction {
-                SchemaUtils.create(BankAccountTransactionsTable)
-                BankAccountTransactionsTable.insert {
-                    it[account] = EntityID(0, BankAccountsTable)
-                    it[creditorIban] = "earns"
-                    it[creditorBic] = "BIC"
-                    it[creditorName] = "Creditor Name"
-                    it[debtorIban] = "spends"
-                    it[debtorBic] = "BIC"
-                    it[debtorName] = "Debitor Name"
-                    it[subject] = "deal"
-                    it[amount] = "1"
-                    it[date] = LocalDateTime.now().millis()
-                    it[currency] = "EUR"
-                    it[pmtInfId] = "0"
-                    it[direction] = "DBIT"
-                    it[accountServicerReference] = "test-account-servicer-reference"
+                SchemaUtils.create(
+                    BankAccountsTable,
+                    BankAccountTransactionsTable,
+                    BankAccountFreshTransactionsTable
+                )
+                val demobank = DemobankConfigEntity.new {
+                    currency = "EUR"
+                    bankDebtLimit = 1000000
+                    usersDebtLimit = 10000
+                    allowRegistrations = true
+                    name = "default"
                 }
-                BankAccountTransactionsTable.insert {
-                    it[account] = EntityID(0, BankAccountsTable)
-                    it[creditorIban] = "earns"
-                    it[creditorBic] = "BIC"
-                    it[creditorName] = "Creditor Name"
-                    it[debtorIban] = "spends"
-                    it[debtorBic] = "BIC"
-                    it[debtorName] = "Debitor Name"
-                    it[subject] = "deal"
-                    it[amount] = "1"
-                    it[date] = LocalDateTime.now().millis()
-                    it[currency] = "EUR"
-                    it[pmtInfId] = "0"
-                    it[direction] = "DBIT"
-                    it[accountServicerReference] = "test-account-servicer-reference"
+                val one = BankAccountEntity.new {
+                    iban = "IBAN 1"
+                    bic = "BIC"
+                    label = "label 1"
+                    owner = "test"
+                    this.demoBank = demobank
                 }
-                BankAccountTransactionsTable.insert {
-                    it[account] = EntityID(0, BankAccountsTable)
-                    it[creditorIban] = "other"
-                    it[creditorBic] = "BIC"
-                    it[creditorName] = "Creditor Name"
-                    it[debtorIban] = "earns"
-                    it[debtorBic] = "BIC"
-                    it[debtorName] = "Debitor Name"
-                    it[subject] = "deal"
-                    it[amount] = "1"
-                    it[date] = LocalDateTime.now().millis()
-                    it[currency] = "EUR"
-                    it[pmtInfId] = "0"
-                    it[direction] = "DBIT"
-                    it[accountServicerReference] = "test-account-servicer-reference"
+                BankAccountTransactionEntity.new {
+                    account = one
+                    creditorIban = "earns"
+                    creditorBic = "BIC"
+                    creditorName = "Creditor Name"
+                    debtorIban = "spends"
+                    debtorBic = "BIC"
+                    debtorName = "Debitor Name"
+                    subject = "deal"
+                    amount = "1"
+                    date = LocalDateTime.now().millis()
+                    currency = "EUR"
+                    pmtInfId = "0"
+                    direction = "CRDT"
+                    accountServicerReference = "test-account-servicer-reference"
+                    this.demobank = demobank
                 }
-                BankAccountTransactionsTable.insert {
-                    it[account] = EntityID(0, BankAccountsTable)
-                    it[creditorIban] = "other"
-                    it[creditorBic] = "BIC"
-                    it[creditorName] = "Creditor Name"
-                    it[debtorIban] = "earns-bad-amount"
-                    it[debtorBic] = "BIC"
-                    it[debtorName] = "Debitor Name"
-                    it[subject] = "deal"
-                    it[amount] = "not a number"
-                    it[date] = LocalDateTime.now().millis()
-                    it[currency] = "EUR"
-                    it[pmtInfId] = "0"
-                    it[direction] = "DBIT"
-                    it[accountServicerReference] = "test-account-servicer-reference"
+                BankAccountTransactionEntity.new {
+                    account = one
+                    creditorIban = "earns"
+                    creditorBic = "BIC"
+                    creditorName = "Creditor Name"
+                    debtorIban = "spends"
+                    debtorBic = "BIC"
+                    debtorName = "Debitor Name"
+                    subject = "deal"
+                    amount = "1"
+                    date = LocalDateTime.now().millis()
+                    currency = "EUR"
+                    pmtInfId = "0"
+                    direction = "CRDT"
+                    accountServicerReference = "test-account-servicer-reference"
+                    this.demobank = demobank
                 }
-                assert(java.math.BigDecimal.ONE == balanceForAccount("earns"))
-                try {
-                    balanceForAccount("earns-bad-amount")
-                } catch (e: UtilError) {
-                    return@transaction
+                BankAccountTransactionEntity.new {
+                    account = one
+                    creditorIban = "earns"
+                    creditorBic = "BIC"
+                    creditorName = "Creditor Name"
+                    debtorIban = "spends"
+                    debtorBic = "BIC"
+                    debtorName = "Debitor Name"
+                    subject = "deal"
+                    amount = "1"
+                    date = LocalDateTime.now().millis()
+                    currency = "EUR"
+                    pmtInfId = "0"
+                    direction = "DBIT"
+                    accountServicerReference = "test-account-servicer-reference"
+                    this.demobank = demobank
                 }
-                // here the expected exception wasn't thrown.
-                assert(false)
+                assert(java.math.BigDecimal.ONE == balanceForAccount(one))
             }
         }
+    }
+    @Test
+    fun balanceAbsTest() {
+        val minus = BigDecimal.ZERO - BigDecimal.ONE
+        val plus = BigDecimal.ONE
+        println(minus.abs().toPlainString())
+        println(plus.abs().toPlainString())
     }
 }

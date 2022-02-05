@@ -17,15 +17,11 @@
  * <http://www.gnu.org/licenses/>
  */
 
-import org.jetbrains.exposed.dao.id.EntityID
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.transactions.transaction
 import org.junit.Test
-import tech.libeufin.sandbox.BankAccountTransactionsTable
-import tech.libeufin.sandbox.BankAccountsTable
-import tech.libeufin.sandbox.dbDropTables
+import tech.libeufin.sandbox.*
 import tech.libeufin.util.millis
-import tech.libeufin.util.parseDashedDate
 import java.io.File
 import java.time.LocalDateTime
 
@@ -64,36 +60,54 @@ class DBTest {
     fun betweenDates() {
         withTestDatabase {
             transaction {
-                SchemaUtils.create(BankAccountTransactionsTable)
-                BankAccountTransactionsTable.insert {
-                    it[account] = EntityID(0, BankAccountsTable)
-                    it[creditorIban] = "earns"
-                    it[creditorBic] = "BIC"
-                    it[creditorName] = "Creditor Name"
-                    it[debtorIban] = "spends"
-                    it[debtorBic] = "BIC"
-                    it[debtorName] = "Debitor Name"
-                    it[subject] = "deal"
-                    it[amount] = "EUR:1"
-                    it[date] = LocalDateTime.now().millis()
-                    it[currency] = "EUR"
-                    it[pmtInfId] = "0"
-                    it[direction] = "DBIT"
-                    it[accountServicerReference] = "test-account-servicer-reference"
+                SchemaUtils.create(
+                    BankAccountTransactionsTable,
+                    BankAccountFreshTransactionsTable
+                )
+                val demobank = DemobankConfigEntity.new {
+                    currency = "EUR"
+                    bankDebtLimit = 1000000
+                    usersDebtLimit = 10000
+                    allowRegistrations = true
+                    name = "default"
+                }
+                val bankAccount = BankAccountEntity.new {
+                    iban = "iban"
+                    bic = "bic"
+                    label = "label"
+                    owner = "test"
+                    demoBank = demobank
+                }
+                BankAccountTransactionEntity.new {
+                    account = bankAccount
+                    creditorIban = "earns"
+                    creditorBic = "BIC"
+                    creditorName = "Creditor Name"
+                    debtorIban = "spends"
+                    debtorBic = "BIC"
+                    debtorName = "Debitor Name"
+                    subject = "deal"
+                    amount = "EUR:1"
+                    date = LocalDateTime.now().millis()
+                    currency = "EUR"
+                    pmtInfId = "0"
+                    direction = "DBIT"
+                    accountServicerReference = "test-account-servicer-reference"
+                    this.demobank = demobank
                 }
             }
-            val result = transaction {
+            // The block below tests the date range in the database query
+            transaction {
                 addLogger(StdOutSqlLogger)
-                BankAccountTransactionsTable.select {
+                BankAccountTransactionEntity.find {
                     BankAccountTransactionsTable.date.between(
-                        parseDashedDate(
-                            "1970-01-01"
-                        ),
-                        LocalDateTime.now().millis()
+                        0, // 1970-01-01
+                        LocalDateTime.now().millis() //
                     )
-                }.firstOrNull()
+                }.apply {
+                    assert(this.count() == 1L)
+                }
             }
-            assert(result != null)
         }
     }
 }

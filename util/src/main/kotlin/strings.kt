@@ -21,7 +21,6 @@ package tech.libeufin.util
 
 import UtilError
 import io.ktor.http.HttpStatusCode
-import validatePlainAmount
 import java.math.BigInteger
 import java.math.BigDecimal
 import java.util.*
@@ -96,7 +95,7 @@ fun chunkString(input: String): String {
         }
         ret.append(input[i])
     }
-    return ret.toString().toUpperCase()
+    return ret.toString().uppercase()
 }
 
 data class AmountWithCurrency(
@@ -109,7 +108,7 @@ fun parseDecimal(decimalStr: String): BigDecimal {
         throw UtilError(
             HttpStatusCode.BadRequest,
             "Bad string amount given: $decimalStr",
-            TalerErrorCode.TALER_EC_GENERIC_PARAMETER_MALFORMED
+            LibeufinErrorCode.LIBEUFIN_EC_GENERIC_PARAMETER_MALFORMED
         )
     return try {
         BigDecimal(decimalStr)
@@ -117,16 +116,9 @@ fun parseDecimal(decimalStr: String): BigDecimal {
         throw UtilError(
             HttpStatusCode.BadRequest,
             "Bad string amount given: $decimalStr",
-            TalerErrorCode.TALER_EC_GENERIC_PARAMETER_MALFORMED
+            LibeufinErrorCode.LIBEUFIN_EC_GENERIC_PARAMETER_MALFORMED
         )
     }
-}
-
-fun parseAmount(amount: String): AmountWithCurrency {
-    val match = Regex("([A-Z]+):([0-9]+(\\.[0-9]+)?)").find(amount) ?: throw
-    EbicsProtocolError(HttpStatusCode.BadRequest, "invalid amount: $amount")
-    val (currency, number) = match.destructured
-    return AmountWithCurrency(currency, Amount(number))
 }
 
 fun getRandomString(length: Int): String {
@@ -148,4 +140,39 @@ private val ibanRegex = Regex("^[A-Z]{2}[0-9]{2}[a-zA-Z0-9]{1,30}$")
 
 fun validateIban(iban: String): Boolean {
     return ibanRegex.matches(iban)
+}
+
+fun isValidResourceName(name: String): Boolean {
+    return name.matches(Regex("[a-z]([-a-z0-9]*[a-z0-9])?"))
+}
+
+fun requireValidResourceName(name: String): String {
+    if (!isValidResourceName(name)) {
+        throw UtilError(
+            HttpStatusCode.BadRequest,
+            "Invalid resource name. The first character must be a lowercase letter, " +
+                    "and all following characters (except for the last character) must be a dash, " +
+                    "lowercase letter, or digit. The last character must be a lowercase letter or digit.",
+            LibeufinErrorCode.LIBEUFIN_EC_GENERIC_PARAMETER_MALFORMED
+        )
+    }
+    return name
+}
+
+
+fun sanityCheckOrThrow(credentials: Pair<String, String>) {
+    if (!sanityCheckCredentials(credentials)) throw UtilError(
+        HttpStatusCode.BadRequest,
+        "Please only use alphanumeric credentials.",
+        LibeufinErrorCode.LIBEUFIN_EC_GENERIC_PARAMETER_MALFORMED
+    )
+}
+/**
+ * Sanity-check user's credentials.
+ */
+fun sanityCheckCredentials(credentials: Pair<String, String>): Boolean {
+    val allowedChars = Regex("^[a-zA-Z0-9]+$")
+    if (!allowedChars.matches(credentials.first)) return false
+    if (!allowedChars.matches(credentials.second)) return false
+    return true
 }
