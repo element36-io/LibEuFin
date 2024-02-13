@@ -30,6 +30,9 @@ import org.slf4j.LoggerFactory
 import tech.libeufin.nexus.NexusError
 import tech.libeufin.util.*
 import java.util.*
+import java.io.File
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
 
 private val logger: Logger = LoggerFactory.getLogger("tech.libeufin.util")
 
@@ -65,6 +68,32 @@ class EbicsDownloadSuccessResult(
 class EbicsDownloadBankErrorResult(
     val returnCode: EbicsReturnCode
 ) : EbicsDownloadResult()
+
+
+fun writeResponseToFile(initResponseStr: String, transactionId: String) {
+    // Get base directory from environment variable TRACE_DIR
+    val baseDirectory = System.getenv("TRACE_DIR") ?: System.getProperty("user.dir")
+
+    // Check if directory "trace" exists, create it if not
+    val traceDirectory = File("$baseDirectory/trace")
+    if (!traceDirectory.exists()) {
+        traceDirectory.mkdirs()
+    }
+
+    // Get current date and time
+    val currentDateTime = LocalDateTime.now()
+    val formatter = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")
+    val formattedDateTime = currentDateTime.format(formatter)
+
+    // Construct file name with transactionId and current date/time
+    val fileName = "${traceDirectory.absolutePath}/${transactionId}_$formattedDateTime.xml"
+
+    // Write response to file
+    val file = File(fileName)
+    file.writeText(initResponseStr)
+    println("Response written to file: $fileName")
+}
+
 
 /**
  * Do an EBICS download transaction.  This includes the initialization phase, transaction phase
@@ -110,6 +139,8 @@ suspend fun doEbicsDownloadTransaction(
             HttpStatusCode.InternalServerError,
             "initial response must contain transaction ID"
         )
+        
+    writeResponseToFile(transactionID,initResponseStr)
 
     val encryptionInfo = initResponse.dataEncryptionInfo
         ?: throw NexusError(HttpStatusCode.InternalServerError, "initial response did not contain encryption info")

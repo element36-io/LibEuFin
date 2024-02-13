@@ -18,4 +18,4 @@ RUN npm install -g npm@6.9.0
 RUN npm install --global yarn@1.22.4
 RUN yarn --cwd /app/frontend/ install
 # RUN yarnpkg --cwd /app/frontend/ build
-RUN yarnpkg global add serve
+RUN yarnpkg global add serve@13.0.4

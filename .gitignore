@@ -20,3 +20,5 @@ __pycache__
 *.mk
 util/src/main/resources/version.txt
 .gitconfig
+*/spx/*
+spx
