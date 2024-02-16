@@ -83,7 +83,7 @@ class EbicsDownloadBankErrorResult(
 ) : EbicsDownloadResult()
 
 
-fun writeResponseToFile(initResponseStr: String, transactionId: String) {
+fun writeResponseToFile( transactionId: String, initResponseStr: String) {
     // Get base directory from environment variable TRACE_DIR
     val baseDirectory = System.getenv("TRACE_DIR") ?: System.getProperty("user.dir")
 
