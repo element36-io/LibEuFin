@@ -477,20 +477,12 @@ class XMLUtil private constructor() {
             }
             authSigNode.parentNode.removeChild(authSigNode)
             val fac = XMLSignatureFactory.getInstance("DOM")
-            // println("wasa sigEl:")
-            // println(XMLUtil.convertNodeToString(sigEl))
-            // System.out.flush()
-            // println("wasa sigEl END")
             val dvc = DOMValidateContext(signingPub, sigEl)
             dvc.setProperty("javax.xml.crypto.dsig.cacheReference", true)
             dvc.uriDereferencer = EbicsSigUriDereferencer()
             val sig = fac.unmarshalXMLSignature(dvc)
             // FIXME: check that parameters are okay!
             val valResult = sig.validate(dvc)
-            // println("wasa canon signedInfo:")
-            // println(sig.signedInfo.canonicalizedData.readAllBytes().toString(Charsets.UTF_8));
-            // println("wasa canon signedInfo END")
-            // System.out.flush()
             sig.signedInfo.references[0].validate(dvc)
             return valResult
         }

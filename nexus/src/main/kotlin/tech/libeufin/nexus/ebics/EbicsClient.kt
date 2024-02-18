@@ -35,6 +35,7 @@ import java.util.*
 import java.io.File
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
+import tech.libeufin.nexus.server.setTransactionId
 
 private val logger: Logger = LoggerFactory.getLogger("tech.libeufin.util")
 
@@ -73,6 +74,7 @@ sealed class EbicsDownloadResult
 
 class EbicsDownloadSuccessResult(
     val orderData: ByteArray
+    val transactionId: String
 ) : EbicsDownloadResult()
 
 /**
@@ -104,6 +106,8 @@ fun writeResponseToFile( transactionId: String, initResponseStr: String) {
     // Write response to file
     val file = File(fileName)
     file.writeText(initResponseStr)
+
+    setTransactionId(transactionId)
     println("Response written to file: $fileName")
 }
 
@@ -222,7 +226,7 @@ suspend fun doEbicsDownloadTransaction(
             throw NexusError(HttpStatusCode.InternalServerError, "unexpected return code")
         }
     }
-    return EbicsDownloadSuccessResult(respPayload)
+    return EbicsDownloadSuccessResult(respPayload, transactionID)
 }
 
 
