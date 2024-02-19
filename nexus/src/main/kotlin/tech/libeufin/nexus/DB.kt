@@ -75,21 +75,6 @@ class TalerInvalidIncomingPaymentEntity(id: EntityID<Long>) : LongEntity(id) {
     var refunded by TalerInvalidIncomingPaymentsTable.refunded
 }
 
-object AnastasisIncomingPaymentsTable: LongIdTable() {
-    val payment = reference("payment", NexusBankTransactionsTable)
-    val subject = text("subject")
-    val timestampMs = long("timestampMs")
-    val debtorPaytoUri = text("incomingPaytoUri")
-}
-
-class AnastasisIncomingPaymentEntity(id: EntityID<Long>) : LongEntity(id) {
-    companion object : LongEntityClass<AnastasisIncomingPaymentEntity>(AnastasisIncomingPaymentsTable)
-
-    var payment by NexusBankTransactionEntity referencedOn AnastasisIncomingPaymentsTable.payment
-    var subject by AnastasisIncomingPaymentsTable.subject
-    var timestampMs by AnastasisIncomingPaymentsTable.timestampMs
-    var debtorPaytoUri by AnastasisIncomingPaymentsTable.debtorPaytoUri
-}
 
 /**
  * This is the table of the incoming payments.  Entries are merely "pointers" to the
@@ -113,29 +98,6 @@ class TalerIncomingPaymentEntity(id: EntityID<Long>) : LongEntity(id) {
 }
 
 /**
- * This table logs all the balances as returned by the bank for all the bank accounts.
- */
-object NexusBankBalancesTable : LongIdTable() {
-    /**
-     * Balance mentioned in the bank message referenced below.  NOTE: this is the
-     * CLOSING balance (a.k.a. CLBD), namely the one obtained by adding the transactions
-     * reported in the bank message to the _previous_ CLBD.
-     */
-    val balance = text("balance") // $currency:x.y
-    val creditDebitIndicator = text("creditDebitIndicator") // CRDT or DBIT.
-    val bankAccount = reference("bankAccount", NexusBankAccountsTable)
-    val date = text("date") // in the YYYY-MM-DD format
-}
-
-class NexusBankBalanceEntity(id: EntityID<Long>) : LongEntity(id) {
-    companion object : LongEntityClass<NexusBankBalanceEntity>(NexusBankBalancesTable)
-    var balance by NexusBankBalancesTable.balance
-    var creditDebitIndicator by NexusBankBalancesTable.creditDebitIndicator
-    var bankAccount by NexusBankAccountEntity referencedOn NexusBankBalancesTable.bankAccount
-    var date by NexusBankBalancesTable.date
-}
-
-/**
  * Table that stores all messages we receive from the bank.
  */
 object NexusBankMessagesTable : LongIdTable() {
@@ -148,6 +110,7 @@ object NexusBankMessagesTable : LongIdTable() {
 
 class NexusBankMessageEntity(id: EntityID<Long>) : LongEntity(id) {
     companion object : LongEntityClass<NexusBankMessageEntity>(NexusBankMessagesTable)
+
     var bankConnection by NexusBankConnectionEntity referencedOn NexusBankMessagesTable.bankConnection
     var messageId by NexusBankMessagesTable.messageId
     var code by NexusBankMessagesTable.code
@@ -396,7 +359,7 @@ class FacadeEntity(id: EntityID<Long>) : LongEntity(id) {
     var creator by NexusUserEntity referencedOn FacadesTable.creator
 }
 
-object FacadeStateTable : LongIdTable() {
+object TalerFacadeStateTable : LongIdTable() {
     val bankAccount = text("bankAccount")
     val bankConnection = text("bankConnection")
     val currency = text("currency")
@@ -413,19 +376,19 @@ object FacadeStateTable : LongIdTable() {
     val highestSeenMsgSerialId = long("highestSeenMessageSerialId").default(0)
 }
 
-class FacadeStateEntity(id: EntityID<Long>) : LongEntity(id) {
-    companion object : LongEntityClass<FacadeStateEntity>(FacadeStateTable)
+class TalerFacadeStateEntity(id: EntityID<Long>) : LongEntity(id) {
+    companion object : LongEntityClass<TalerFacadeStateEntity>(TalerFacadeStateTable)
 
-    var bankAccount by FacadeStateTable.bankAccount
-    var bankConnection by FacadeStateTable.bankConnection
-    var currency by FacadeStateTable.currency
+    var bankAccount by TalerFacadeStateTable.bankAccount
+    var bankConnection by TalerFacadeStateTable.bankConnection
+    var currency by TalerFacadeStateTable.currency
 
     /**
      *  "statement", "report", "notification"
      */
-    var reserveTransferLevel by FacadeStateTable.reserveTransferLevel
-    var facade by FacadeEntity referencedOn FacadeStateTable.facade
-    var highestSeenMessageSerialId by FacadeStateTable.highestSeenMsgSerialId
+    var reserveTransferLevel by TalerFacadeStateTable.reserveTransferLevel
+    var facade by FacadeEntity referencedOn TalerFacadeStateTable.facade
+    var highestSeenMessageSerialId by TalerFacadeStateTable.highestSeenMsgSerialId
 }
 
 object NexusScheduledTasksTable : LongIdTable() {
@@ -494,13 +457,11 @@ fun dbDropTables(dbConnectionString: String) {
             TalerInvalidIncomingPaymentsTable,
             NexusBankConnectionsTable,
             NexusBankMessagesTable,
-            NexusBankBalancesTable,
             FacadesTable,
-            FacadeStateTable,
+            TalerFacadeStateTable,
             NexusScheduledTasksTable,
             OfferedBankAccountsTable,
             NexusPermissionsTable,
-            AnastasisIncomingPaymentsTable
         )
     }
 }
@@ -515,18 +476,16 @@ fun dbCreateTables(dbConnectionString: String) {
             PaymentInitiationsTable,
             NexusEbicsSubscribersTable,
             NexusBankAccountsTable,
-            NexusBankBalancesTable,
             NexusBankTransactionsTable,
-            AnastasisIncomingPaymentsTable,
             TalerIncomingPaymentsTable,
             TalerRequestedPaymentsTable,
-            FacadeStateTable,
+            TalerFacadeStateTable,
             TalerInvalidIncomingPaymentsTable,
             NexusBankConnectionsTable,
             NexusBankMessagesTable,
             FacadesTable,
             OfferedBankAccountsTable,
-            NexusPermissionsTable
+            NexusPermissionsTable,
         )
     }
 }

@@ -1,9 +1,6 @@
 import io.ktor.http.*
-import tech.libeufin.util.LibeufinErrorCode
 import tech.libeufin.util.TalerErrorCode
 import kotlin.system.exitProcess
-import org.slf4j.Logger
-import org.slf4j.LoggerFactory
 
 /*
  * This file is part of LibEuFin.
@@ -24,12 +21,10 @@ import org.slf4j.LoggerFactory
  * <http://www.gnu.org/licenses/>
  */
 
-val logger: Logger = LoggerFactory.getLogger("tech.libeufin.util")
-
-open class UtilError(
+data class UtilError(
     val statusCode: HttpStatusCode,
     val reason: String,
-    val ec: LibeufinErrorCode? = null
+    val ec: TalerErrorCode?
 ) :
     Exception("$reason (HTTP status $statusCode)")
 
@@ -49,9 +44,4 @@ fun execThrowableOrTerminate(func: () -> Unit) {
         println(e.message)
         exitProcess(1)
     }
-}
-
-fun printLnErr(errorMessage: String) {
-    System.err.println(errorMessage)
-
 }

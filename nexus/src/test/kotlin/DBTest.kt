@@ -65,7 +65,7 @@ class DBTest {
                 addLogger(StdOutSqlLogger)
                 SchemaUtils.create(
                     FacadesTable,
-                    FacadeStateTable,
+                    TalerFacadeStateTable,
                     NexusUsersTable
                 )
                 val user = NexusUserEntity.new {
@@ -78,7 +78,7 @@ class DBTest {
                     type = "any"
                     creator = user
                 }
-                FacadeStateEntity.new {
+                TalerFacadeStateEntity.new {
                     bankAccount = "b"
                     bankConnection = "b"
                     reserveTransferLevel = "any"

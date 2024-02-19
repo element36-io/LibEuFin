@@ -1,8 +1,4 @@
-on:
-  push:
-    branches-ignore:
-      #- 'main'        # ** matches every branch
-      - 'feature/*'  
+on: [push, pull_request]
 jobs:
   push_to_dockerhub:
     name: build image and push to dockerhub

@@ -1,7 +1,8 @@
-package tech.libeufin.util
-
-import UtilError
 import io.ktor.http.*
+import tech.libeufin.util.Amount
+import tech.libeufin.util.AmountWithCurrency
+import tech.libeufin.util.EbicsProtocolError
+import java.math.BigDecimal
 
 /*
  * This file is part of LibEuFin.
@@ -26,11 +27,4 @@ val re = Regex("^([0-9]+(\\.[0-9]+)?)$")
 
 fun validatePlainAmount(plainAmount: String): Boolean {
     return re.matches(plainAmount)
-}
-
-fun parseAmount(amount: String): AmountWithCurrency {
-    val match = Regex("([A-Z]+):([0-9]+(\\.[0-9]+)?)").find(amount) ?: throw
-    UtilError(HttpStatusCode.BadRequest, "invalid amount: $amount")
-    val (currency, number) = match.destructured
-    return AmountWithCurrency(currency, Amount(number))
 }

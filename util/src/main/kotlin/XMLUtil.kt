@@ -61,7 +61,8 @@ import javax.xml.validation.Validator
 import javax.xml.xpath.XPath
 import javax.xml.xpath.XPathConstants
 import javax.xml.xpath.XPathFactory
-import logger
+
+private val logger: Logger = LoggerFactory.getLogger("tech.libeufin.util")
 
 class DefaultNamespaces : NamespacePrefixMapper() {
     override fun getPreferredPrefix(namespaceUri: String?, suggestion: String?, requirePrefix: Boolean): String? {
@@ -480,7 +481,7 @@ class XMLUtil private constructor() {
             dvc.setProperty("javax.xml.crypto.dsig.cacheReference", true)
             dvc.uriDereferencer = EbicsSigUriDereferencer()
             val sig = fac.unmarshalXMLSignature(dvc)
-            // FIXME: check that parameters are okay!
+            // FIXME: check that parameters are okay!s
             val valResult = sig.validate(dvc)
             sig.signedInfo.references[0].validate(dvc)
             return valResult

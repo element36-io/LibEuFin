@@ -23,8 +23,6 @@ package tech.libeufin.util
  * (Very) generic information about one payment.  Can be
  * derived from a CAMT response, or from a prepared PAIN
  * document.
- *
- * Note:
  */
 data class RawPayment(
     val creditorIban: String,
@@ -51,18 +49,8 @@ data class IncomingPaymentInfo(
     val debtorIban: String,
     val debtorBic: String?,
     val debtorName: String,
-    /**
-     * A stringified number, no currency required.  This
-     * one will be extracted from the demobank configuration.
-     */
     val amount: String,
     val subject: String
-)
-
-data class TWGAdminAddIncoming(
-    val amount: String,
-    val reserve_pub: String,
-    val debit_account: String
 )
 
 data class PaymentInfo(

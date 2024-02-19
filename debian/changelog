@@ -1,15 +1,3 @@
-libeufin (0.0.1-12) unstable; urgency=medium
-
-  * Fix key letter generation.
-
- -- Florian Dold <florian@dold.me>  Thu, 14 Oct 2021 14:46:04 +0200
-
-libeufin (0.0.1-11) unstable; urgency=medium
-
-  * Add anastasis facade to the nexus.
-
- -- Florian Dold <florian@dold.me>  Tue, 24 Aug 2021 18:40:11 +0200
-
 libeufin (0.0.1-10) unstable; urgency=medium
 
   * Add BIC validation to nexus and sandbox.

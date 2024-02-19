@@ -19,23 +19,17 @@ from getpass import getpass
 # was received.
 def check_response_status(resp, expected_status_code=200):
     if resp.status_code != expected_status_code:
-        print("Unexpected response status: {}".format(resp.status_code), file=sys.stderr)
-        print("Response: {}".format(resp.text))
+        print("Unexpected response status: {}".format(resp.status_code))
         sys.exit(1)
+
 
 def tell_user(resp, expected_status_code=200, withsuccess=False):
     if resp.status_code != expected_status_code:
-        print(resp.content.decode("utf-8"), file=sys.stderr)
+        print(resp.content.decode("utf-8"))
         return
     if withsuccess:
         print(resp.content.decode("utf-8"))
 
-# Normalize the two components to "x/" and "y" and pass them
-# to urljoin().  This avoids drop-policies from plain urljoin().
-def urljoin_nodrop(a, b):
-    a = a + "/" # urljoin will drop extra trailing slashes.
-    b = "/".join([x for x in b.split("/") if x != ""]) # remove leading slashes.
-    return urljoin(a, b)
 
 # FIXME: deprecate this in favor of NexusContext
 def fetch_env():
@@ -95,7 +89,7 @@ def permissions(ctx):
 @users.command("self", help="Show information about authenticated user.")
 @click.pass_obj
 def users_self(obj):
-    url = urljoin_nodrop(obj.nexus_base_url, f"/user")
+    url = urljoin(obj.nexus_base_url, f"/user")
     try:
         resp = get(url, auth=auth.HTTPBasicAuth(obj.nexus_username, obj.nexus_password))
     except Exception as e:
@@ -109,7 +103,7 @@ def users_self(obj):
 @users.command("list", help="List users")
 @click.pass_obj
 def list_users(obj):
-    url = urljoin_nodrop(obj.nexus_base_url, f"/users")
+    url = urljoin(obj.nexus_base_url, f"/users")
     try:
         resp = get(url, auth=auth.HTTPBasicAuth(obj.nexus_username, obj.nexus_password))
     except Exception as e:
@@ -132,7 +126,7 @@ def list_users(obj):
 )
 @click.pass_obj
 def change_password(obj, username, new_password):
-    url = urljoin_nodrop(obj.nexus_base_url, f"/users/{username}/password")
+    url = urljoin(obj.nexus_base_url, f"/users/{username}/password")
     try:
         body = dict(newPassword=new_password)
         resp = post(
@@ -160,7 +154,7 @@ def change_password(obj, username, new_password):
 )
 @click.pass_obj
 def create_user(obj, username, password):
-    url = urljoin_nodrop(obj.nexus_base_url, f"/users")
+    url = urljoin(obj.nexus_base_url, f"/users")
     try:
         body = dict(
             username=username,
@@ -183,7 +177,7 @@ def create_user(obj, username, password):
 @permissions.command("list", help="Show permissions")
 @click.pass_obj
 def list_permission(obj):
-    url = urljoin_nodrop(obj.nexus_base_url, f"/permissions")
+    url = urljoin(obj.nexus_base_url, f"/permissions")
     try:
         resp = get(url, auth=auth.HTTPBasicAuth(obj.nexus_username, obj.nexus_password))
     except Exception as e:
@@ -205,7 +199,7 @@ def list_permission(obj):
 def grant_permission(
     obj, subject_type, subject_id, resource_type, resource_id, permission_name
 ):
-    url = urljoin_nodrop(obj.nexus_base_url, f"/permissions")
+    url = urljoin(obj.nexus_base_url, f"/permissions")
     try:
         permission = dict(
             subjectType=subject_type,
@@ -242,7 +236,7 @@ def grant_permission(
 def revoke_permission(
     obj, subject_type, subject_id, resource_type, resource_id, permission_name
 ):
-    url = urljoin_nodrop(obj.nexus_base_url, f"/permissions")
+    url = urljoin(obj.nexus_base_url, f"/permissions")
     try:
         permission = dict(
             subjectType=subject_type,
@@ -278,16 +272,6 @@ def accounts(ctx):
 class SandboxContext:
     def __init__(self):
         self.sandbox_base_url = None
-        self.username, self.password = self.require_sandbox_credentials()
-
-    def require_sandbox_credentials(self):
-        sandbox_username = os.environ.get("LIBEUFIN_SANDBOX_USERNAME")
-        sandbox_password = os.environ.get("LIBEUFIN_SANDBOX_PASSWORD")
-        if not sandbox_username or not sandbox_password:
-            print("""INFO: LIBEUFIN_SANDBOX_USERNAME and LIBEUFIN_SANDBOX_PASSWORD
-not found in the environment, assuming tests are being run..."""
-            )
-        return sandbox_username, sandbox_password
 
     def require_sandbox_base_url(self):
         if self.sandbox_base_url:
@@ -298,17 +282,6 @@ not found in the environment, assuming tests are being run..."""
                 "sandbox URL must be given as an argument or in LIBEUFIN_SANDBOX_URL"
             )
         return sandbox_base_url
-
-    # For the Access-API endpoints, the user must choose exactly *one* bank
-    # and include that in ‘LIBEUFIN_SANDBOX_URL’ (or ‘--sandbox-url’).
-    def access_api_url(self, upath):
-        # NB: We expect that ‘base’ ends w/ f"demobanks/{bank}".
-        # This means that base for non-Access-API endpoints
-        # is incompatible w/ that for Access-API endpoints.
-        # (Using one for the other will result in 404.)  But that's
-        # OK because the non-Access-API endspoints are going away.
-        base = self.require_sandbox_base_url ()
-        return urljoin_nodrop (base, "/access-api" + upath)
 
 
 class NexusContext:
@@ -367,11 +340,10 @@ def sandbox(ctx, sandbox_url):
 @click.argument("output_file")
 @click.pass_obj
 def get_key_letter(obj, connection_name, output_file):
-    url = urljoin_nodrop(obj.nexus_base_url, f"/bank-connections/{connection_name}/keyletter")
+    url = urljoin(obj.nexus_base_url, f"/bank-connections/{connection_name}/keyletter")
     try:
         resp = get(url, auth=auth.HTTPBasicAuth(obj.username, obj.password))
-    except Exception as e:
-        print(e)
+    except Exception:
         print("Could not reach nexus at " + url)
         exit(1)
 
@@ -389,7 +361,7 @@ def get_key_letter(obj, connection_name, output_file):
 @click.argument("connection-name")
 @click.pass_obj
 def export_backup(obj, connection_name, passphrase, output_file):
-    url = urljoin_nodrop(
+    url = urljoin(
         obj.nexus_base_url, "/bank-connections/{}/export-backup".format(connection_name)
     )
     try:
@@ -398,8 +370,7 @@ def export_backup(obj, connection_name, passphrase, output_file):
             json=dict(passphrase=passphrase),
             auth=auth.HTTPBasicAuth(obj.username, obj.password),
         )
-    except Exception as e:
-        print(e)
+    except Exception:
         print("Could not reach nexus at " + url)
         exit(1)
 
@@ -418,15 +389,14 @@ def export_backup(obj, connection_name, passphrase, output_file):
 @click.pass_obj
 def delete_connection(obj, connection_name):
 
-    url = urljoin_nodrop(obj.nexus_base_url, "/bank-connections/delete-connection")
+    url = urljoin(obj.nexus_base_url, "/bank-connections/delete-connection")
     try:
         resp = post(
             url,
             json=dict(bankConnectionId=connection_name),
             auth=auth.HTTPBasicAuth(obj.username, obj.password),
         )
-    except Exception as e:
-        print(e)
+    except Exception:
         print("Could not reach nexus at " + url)
         exit(1)
 
@@ -440,11 +410,10 @@ def delete_connection(obj, connection_name):
 @click.argument("connection-name")
 @click.pass_obj
 def restore_backup(obj, backup_file, passphrase, connection_name):
-    url = urljoin_nodrop(obj.nexus_base_url, "/bank-connections")
+    url = urljoin(obj.nexus_base_url, "/bank-connections")
     try:
         backup = open(backup_file, "r")
-    except Exception as e:
-        print(e)
+    except Exception:
         print("Could not open the backup at {}".format(backup_file))
         exit(1)
     backup_json = json.loads(backup.read())
@@ -461,8 +430,7 @@ def restore_backup(obj, backup_file, passphrase, connection_name):
             ),
             auth=auth.HTTPBasicAuth(obj.username, obj.password),
         )
-    except Exception as e:
-        print(e)
+    except Exception:
         print("Could not reach nexus at " + url)
         exit(1)
 
@@ -480,7 +448,7 @@ def restore_backup(obj, backup_file, passphrase, connection_name):
 def new_ebics_connection(
     obj, connection_name, ebics_url, host_id, partner_id, ebics_user_id
 ):
-    url = urljoin_nodrop(obj.nexus_base_url, "/bank-connections")
+    url = urljoin(obj.nexus_base_url, "/bank-connections")
     body = dict(
         name=connection_name,
         source="new",
@@ -494,8 +462,7 @@ def new_ebics_connection(
     )
     try:
         resp = post(url, json=body, auth=auth.HTTPBasicAuth(obj.username, obj.password))
-    except Exception as e:
-        print(e)
+    except Exception:
         print(f"Could not reach nexus at {url}")
         exit(1)
 
@@ -507,13 +474,12 @@ def new_ebics_connection(
 @click.argument("connection-name")
 @click.pass_obj
 def connect(obj, connection_name):
-    url = urljoin_nodrop(obj.nexus_base_url, f"/bank-connections/{connection_name}/connect")
+    url = urljoin(obj.nexus_base_url, f"/bank-connections/{connection_name}/connect")
     try:
         resp = post(
             url, json=dict(), auth=auth.HTTPBasicAuth(obj.username, obj.password)
         )
-    except Exception as e:
-        print(e)
+    except Exception:
         print(f"Could not reach nexus at {url}")
         exit(1)
     tell_user(resp, withsuccess=True)
@@ -534,7 +500,7 @@ def connect(obj, connection_name):
 def import_bank_account(
     obj, connection_name, offered_account_id, nexus_bank_account_id
 ):
-    url = urljoin_nodrop(
+    url = urljoin(
         obj.nexus_base_url,
         "/bank-connections/{}/import-account".format(connection_name),
     )
@@ -561,7 +527,7 @@ def import_bank_account(
 @click.argument("connection-name")
 @click.pass_obj
 def download_bank_accounts(obj, connection_name):
-    url = urljoin_nodrop(
+    url = urljoin(
         obj.nexus_base_url,
         "/bank-connections/{}/fetch-accounts".format(connection_name),
     )
@@ -569,8 +535,7 @@ def download_bank_accounts(obj, connection_name):
         resp = post(
             url, json=dict(), auth=auth.HTTPBasicAuth(obj.username, obj.password)
         )
-    except Exception as e:
-        print(e)
+    except Exception:
         print("Could not reach nexus at " + url)
         exit(1)
 
@@ -581,13 +546,12 @@ def download_bank_accounts(obj, connection_name):
 @connections.command(help="List the connections.")
 @click.pass_obj
 def list_connections(obj):
-    url = urljoin_nodrop(obj.nexus_base_url, "/bank-connections")
+    url = urljoin(obj.nexus_base_url, "/bank-connections")
     try:
         resp = get(
             url, json=dict(), auth=auth.HTTPBasicAuth(obj.username, obj.password)
         )
-    except Exception as e:
-        print(e)
+    except Exception:
         print("Could not reach nexus at " + url)
         exit(1)
 
@@ -599,13 +563,12 @@ def list_connections(obj):
 @click.argument("connection-name")
 @click.pass_obj
 def show_connection(obj, connection_name):
-    url = urljoin_nodrop(obj.nexus_base_url, f"/bank-connections/{connection_name}")
+    url = urljoin(obj.nexus_base_url, f"/bank-connections/{connection_name}")
     try:
         resp = get(
             url, json=dict(), auth=auth.HTTPBasicAuth(obj.username, obj.password)
         )
-    except Exception as e:
-        print(e)
+    except Exception:
         print("Could not reach nexus at " + url)
         exit(1)
 
@@ -617,15 +580,14 @@ def show_connection(obj, connection_name):
 @click.argument("connection-name")
 @click.pass_obj
 def list_offered_bank_accounts(obj, connection_name):
-    url = urljoin_nodrop(
+    url = urljoin(
         obj.nexus_base_url, "/bank-connections/{}/accounts".format(connection_name)
     )
     try:
         resp = get(
             url, json=dict(), auth=auth.HTTPBasicAuth(obj.username, obj.password)
         )
-    except Exception as e:
-        print(e)
+    except Exception:
         print("Could not reach nexus at " + url)
         exit(1)
 
@@ -663,7 +625,7 @@ def task_schedule(
     task_param_level,
 ):
 
-    url = urljoin_nodrop(obj.nexus_base_url, "/bank-accounts/{}/schedule".format(account_name))
+    url = urljoin(obj.nexus_base_url, "/bank-accounts/{}/schedule".format(account_name))
     body = dict(name=task_name, cronspec=task_cronspec, type=task_type)
     if task_type == "fetch" and not (task_param_range_type or task_param_level):
         print("'fetch' type requires --task-param-range-type and --task-param-level")
@@ -674,8 +636,7 @@ def task_schedule(
     )
     try:
         resp = post(url, json=body, auth=auth.HTTPBasicAuth(obj.username, obj.password))
-    except Exception as e:
-        print(e)
+    except Exception:
         print("Could not reach nexus at " + url)
         exit(1)
 
@@ -688,14 +649,13 @@ def task_schedule(
 @click.option("--task-name", help="Name of the task", required=True)
 @click.pass_obj
 def task_status(obj, account_name, task_name):
-    url = urljoin_nodrop(
+    url = urljoin(
         obj.nexus_base_url,
         "/bank-accounts/{}/schedule/{}".format(account_name, task_name),
     )
     try:
         resp = get(url, auth=auth.HTTPBasicAuth(obj.username, obj.password))
-    except Exception as e:
-        print(e)
+    except Exception:
         print("Could not reach nexus " + url)
         exit(1)
 
@@ -708,14 +668,13 @@ def task_status(obj, account_name, task_name):
 @click.option("--task-name", help="Name of the task", required=True)
 @click.pass_obj
 def task_delete(obj, account_name, task_name):
-    url = urljoin_nodrop(
+    url = urljoin(
         obj.nexus_base_url,
         "/bank-accounts/{}/schedule/{}".format(account_name, task_name),
     )
     try:
         resp = delete(url, auth=auth.HTTPBasicAuth(obj.username, obj.password))
-    except Exception as e:
-        print(e)
+    except Exception:
         print("Could not reach nexus " + url)
         exit(1)
 
@@ -727,11 +686,10 @@ def task_delete(obj, account_name, task_name):
 @click.argument("account-name")
 @click.pass_obj
 def tasks_show(obj, account_name):
-    url = urljoin_nodrop(obj.nexus_base_url, "/bank-accounts/{}/schedule".format(account_name))
+    url = urljoin(obj.nexus_base_url, "/bank-accounts/{}/schedule".format(account_name))
     try:
         resp = get(url, auth=auth.HTTPBasicAuth(obj.username, obj.password))
-    except Exception as e:
-        print(e)
+    except Exception:
         print("Could not reach nexus " + url)
         exit(1)
 
@@ -742,7 +700,7 @@ def tasks_show(obj, account_name):
 @accounts.command(help="Show accounts belonging to calling user")
 @click.pass_obj
 def show(obj):
-    url = urljoin_nodrop(obj.nexus_base_url, "/bank-accounts")
+    url = urljoin(obj.nexus_base_url, "/bank-accounts")
     try:
         resp = get(url, auth=auth.HTTPBasicAuth(obj.username, obj.password))
     except Exception as e:
@@ -778,7 +736,7 @@ def prepare_payment(
     payment_amount,
     payment_subject,
 ):
-    url = urljoin_nodrop(
+    url = urljoin(
         obj.nexus_base_url, "/bank-accounts/{}/payment-initiations".format(account_name)
     )
     body = dict(
@@ -791,8 +749,7 @@ def prepare_payment(
 
     try:
         resp = post(url, json=body, auth=auth.HTTPBasicAuth(obj.username, obj.password))
-    except Exception as e:
-        print(e)
+    except Exception:
         print("Could not reach nexus at " + url)
         exit(1)
 
@@ -805,7 +762,7 @@ def prepare_payment(
 @click.argument("account-name")
 @click.pass_obj
 def submit_payment(obj, account_name, payment_uuid):
-    url = urljoin_nodrop(
+    url = urljoin(
         obj.nexus_base_url,
         "/bank-accounts/{}/payment-initiations/{}/submit".format(
             account_name, payment_uuid
@@ -815,8 +772,7 @@ def submit_payment(obj, account_name, payment_uuid):
         resp = post(
             url, json=dict(), auth=auth.HTTPBasicAuth(obj.username, obj.password)
         )
-    except Exception as e:
-        print(e)
+    except Exception:
         print("Could not reach nexus at" + url)
         exit(1)
 
@@ -829,14 +785,13 @@ def submit_payment(obj, account_name, payment_uuid):
 @click.argument("account-name")
 @click.pass_obj
 def show_payment(obj, account_name, payment_uuid):
-    url = urljoin_nodrop(
+    url = urljoin(
         obj.nexus_base_url,
         f"/bank-accounts/{account_name}/payment-initiations/{payment_uuid}",
     )
     try:
         resp = get(url, auth=auth.HTTPBasicAuth(obj.username, obj.password))
-    except Exception as e:
-        print(e)
+    except Exception:
         print("Could not reach nexus at" + url)
         exit(1)
 
@@ -848,13 +803,12 @@ def show_payment(obj, account_name, payment_uuid):
 @click.argument("account-name")
 @click.pass_obj
 def list_payments(obj, account_name):
-    url = urljoin_nodrop(
+    url = urljoin(
         obj.nexus_base_url, f"/bank-accounts/{account_name}/payment-initiations"
     )
     try:
         resp = get(url, auth=auth.HTTPBasicAuth(obj.username, obj.password))
-    except Exception as e:
-        print(e)
+    except Exception:
         print("Could not reach nexus at" + url)
         exit(1)
 
@@ -869,14 +823,13 @@ def list_payments(obj, account_name):
 @click.option("--payment-uuid", help="payment unique identifier", required=True)
 @click.pass_obj
 def delete_payment(obj, account_name, payment_uuid):
-    url = urljoin_nodrop(
+    url = urljoin(
         obj.nexus_base_url,
         f"/bank-accounts/{account_name}/payment-initiations/{payment_uuid}",
     )
     try:
         resp = delete(url, auth=auth.HTTPBasicAuth(obj.username, obj.password))
-    except Exception as e:
-        print(e)
+    except Exception:
         print("Could not reach nexus at" + url)
         exit(1)
 
@@ -894,7 +847,7 @@ def delete_payment(obj, account_name, payment_uuid):
 @click.argument("account-name")
 @click.pass_obj
 def fetch_transactions(obj, account_name, range_type, level):
-    url = urljoin_nodrop(
+    url = urljoin(
         obj.nexus_base_url, "/bank-accounts/{}/fetch-transactions".format(account_name)
     )
     try:
@@ -903,8 +856,7 @@ def fetch_transactions(obj, account_name, range_type, level):
             json=dict(rangeType=range_type, level=level),
             auth=auth.HTTPBasicAuth(obj.username, obj.password),
         )
-    except Exception as e:
-        print(e)
+    except Exception:
         print("Could not reach nexus " + url)
         exit(1)
 
@@ -922,13 +874,12 @@ def fetch_transactions(obj, account_name, range_type, level):
 @click.argument("account-name")
 @click.pass_obj
 def transactions(obj, compact, account_name):
-    url = urljoin_nodrop(
+    url = urljoin(
         obj.nexus_base_url, "/bank-accounts/{}/transactions".format(account_name)
     )
     try:
         resp = get(url, auth=auth.HTTPBasicAuth(obj.username, obj.password))
-    except Exception as e:
-        print(e)
+    except Exception:
         print("Could not reach nexus " + url)
         exit(1)
 
@@ -952,7 +903,7 @@ def transactions(obj, compact, account_name):
 @facades.command("list", help="List active facades in the Nexus")
 @click.pass_obj
 def list_facades(obj):
-    url = urljoin_nodrop(obj.nexus_base_url, "/facades")
+    url = urljoin(obj.nexus_base_url, "/facades")
     try:
         resp = get(url, auth=auth.HTTPBasicAuth(obj.username, obj.password))
     except Exception as e:
@@ -972,7 +923,7 @@ def list_facades(obj):
 @click.argument("account-name")
 @click.pass_obj
 def new_anastasis_facade(obj, facade_name, connection_name, account_name, currency):
-    url = urljoin_nodrop(obj.nexus_base_url, "/facades")
+    url = urljoin(obj.nexus_base_url, "/facades")
     try:
         resp = post(
             url,
@@ -1006,7 +957,7 @@ def new_anastasis_facade(obj, facade_name, connection_name, account_name, curren
 @click.argument("account-name")
 @click.pass_obj
 def new_twg_facade(obj, facade_name, connection_name, account_name, currency):
-    url = urljoin_nodrop(obj.nexus_base_url, "/facades")
+    url = urljoin(obj.nexus_base_url, "/facades")
     try:
         resp = post(
             url,
@@ -1041,11 +992,10 @@ def sandbox_ebicshost(ctx):
 @click.pass_obj
 def check_sandbox_status(obj):
     sandbox_base_url = obj.require_sandbox_base_url()
-    url = urljoin_nodrop(sandbox_base_url, "/")
+    url = urljoin(sandbox_base_url, "/config")
     try:
         resp = get(url)
-    except Exception as e:
-        print(e)
+    except Exception:
         print("Could not reach sandbox")
         exit(1)
 
@@ -1058,15 +1008,10 @@ def check_sandbox_status(obj):
 @click.pass_obj
 def make_ebics_host(obj, host_id):
     sandbox_base_url = obj.require_sandbox_base_url()
-    url = urljoin_nodrop(sandbox_base_url, "/admin/ebics/hosts")
+    url = urljoin(sandbox_base_url, "/admin/ebics/hosts")
     try:
-        resp = post(
-            url,
-            json=dict(hostID=host_id, ebicsVersion="2.5"),
-            auth=auth.HTTPBasicAuth(obj.username, obj.password),
-        )
-    except Exception as e:
-        print(e)
+        resp = post(url, json=dict(hostID=host_id, ebicsVersion="2.5"))
+    except Exception:
         print("Could not reach sandbox")
         exit(1)
 
@@ -1078,11 +1023,10 @@ def make_ebics_host(obj, host_id):
 @click.pass_obj
 def list_ebics_host(obj):
     sandbox_base_url = obj.require_sandbox_base_url()
-    url = urljoin_nodrop(sandbox_base_url, "/admin/ebics/hosts")
+    url = urljoin(sandbox_base_url, "/admin/ebics/hosts")
     try:
-        resp = get(url,auth=auth.HTTPBasicAuth(obj.username, obj.password))
-    except Exception as e:
-        print(e)
+        resp = get(url)
+    except Exception:
         print("Could not reach sandbox")
         exit(1)
 
@@ -1103,15 +1047,12 @@ def sandbox_ebicssubscriber(ctx):
 @click.pass_obj
 def create_ebics_subscriber(obj, host_id, partner_id, user_id):
     sandbox_base_url = obj.require_sandbox_base_url()
-    url = urljoin_nodrop(sandbox_base_url, "/admin/ebics/subscribers")
+    url = urljoin(sandbox_base_url, "/admin/ebics/subscribers")
     try:
         resp = post(
-            url,
-            json=dict(hostID=host_id, partnerID=partner_id, userID=user_id),
-            auth=auth.HTTPBasicAuth(obj.username, obj.password),
+            url, json=dict(hostID=host_id, partnerID=partner_id, userID=user_id)
         )
-    except Exception as e:
-        print(e)
+    except Exception:
         print("Could not reach sandbox")
         exit(1)
 
@@ -1123,11 +1064,10 @@ def create_ebics_subscriber(obj, host_id, partner_id, user_id):
 @click.pass_obj
 def list_ebics_subscriber(obj):
     sandbox_base_url = obj.require_sandbox_base_url()
-    url = urljoin_nodrop(sandbox_base_url, "/admin/ebics/subscribers")
+    url = urljoin(sandbox_base_url, "/admin/ebics/subscribers")
     try:
-        resp = get(url,auth=auth.HTTPBasicAuth(obj.username, obj.password))
-    except Exception as e:
-        print(e)
+        resp = get(url)
+    except Exception:
         print("Could not reach sandbox")
         exit(1)
 
@@ -1144,6 +1084,7 @@ def sandbox_ebicsbankaccount(ctx):
 @sandbox_ebicsbankaccount.command(
     "create", help="Create a bank account for a EBICS subscriber."
 )
+@click.option("--currency", help="currency", prompt=True)
 @click.option("--iban", help="IBAN", required=True)
 @click.option("--bic", help="BIC", required=True)
 @click.option("--person-name", help="bank account owner name", required=True)
@@ -1156,6 +1097,7 @@ def sandbox_ebicsbankaccount(ctx):
 @click.pass_obj
 def associate_bank_account(
     obj,
+    currency,
     iban,
     bic,
     person_name,
@@ -1165,8 +1107,9 @@ def associate_bank_account(
     ebics_partner_id,
 ):
     sandbox_base_url = obj.require_sandbox_base_url()
-    url = urljoin_nodrop(sandbox_base_url, "/admin/ebics/bank-accounts")
+    url = urljoin(sandbox_base_url, "/admin/ebics/bank-accounts")
     body = dict(
+        currency=currency,
         subscriber=dict(
             userID=ebics_user_id, partnerID=ebics_partner_id, hostID=ebics_host_id
         ),
@@ -1177,12 +1120,8 @@ def associate_bank_account(
     )
 
     try:
-        resp = post(
-            url, json=body,
-            auth=auth.HTTPBasicAuth(obj.username, obj.password),
-        )
-    except Exception as e:
-        print(e)
+        resp = post(url, json=body)
+    except Exception:
         print("Could not reach sandbox")
         exit(1)
 
@@ -1196,140 +1135,14 @@ def sandbox_bankaccount(ctx):
     pass
 
 
-# This group deals with the new Access API
-# and the 'demobank' model.
-@sandbox.group(
-    "demobank",
-    help="Subcommands for the 'demobank' model and the Access API."
-)
-@click.pass_context
-def sandbox_demobank(ctx):
-    pass
-
-@sandbox_demobank.command("new-transaction", help="Initiate a new transaction.")
-@click.option(
-    "--bank-account",
-    help="Label of the bank account to be debited for the transaction.",
-    required=True
-)
-# Including the subject in the payto to match the
-# payto returned by the merchant backend helper program
-# to create tip reserves.
-@click.option(
-    "--payto-with-subject",
-    help="Payto address including the subject as a query parameter.",
-    required=True
-)
-@click.option(
-    "--amount",
-    help="Amount to transfer, in the CUR:X.Y format.",
-    required=True
-)
-@click.pass_obj
-def sandbox_demobank_new_transaction(obj, bank_account, payto_with_subject, amount):
-    url = obj.access_api_url (f"/accounts/{bank_account}/transactions")
-    try:
-        body = dict(paytoUri=payto_with_subject, amount=amount)
-        resp = post(
-            url,
-            json=body,
-            auth=auth.HTTPBasicAuth(obj.username, obj.password),
-        )
-    except Exception as e:
-        print(e)
-        print("Could not reach sandbox at " + url)
-        exit(1)
-
-    check_response_status(resp)
-
-@sandbox_demobank.command("info", help="Return basic information of a bank account")
-@click.option(
-    "--bank-account",
-    help="Label of the bank account whose information should be returned.",
-    required=True
-)
-@click.pass_obj
-def sandbox_demobank_info(obj, bank_account):
-    url = obj.access_api_url (f"/accounts/{bank_account}")
-    try:
-        resp = get(
-            url,
-            auth=auth.HTTPBasicAuth(obj.username, obj.password)
-        )
-    except Exception as e:
-        print(e)
-        print("Could not reach sandbox")
-        exit(1)
-    tell_user(resp, withsuccess=True)
-
-@sandbox_demobank.command("register",
-    help="""register a new bank account.  Credentials will be taken
-    from the LIBEUFIN_SANDBOX_{USERNAME, PASSWORD} env variables.  Note
-    that the username will be both the username to login at the bank
-    and the bank account label"""
-)
-@click.option(
-    "--public/--no-public",
-    default=False,
-    help="Decides whether a bank account is public.",
-)
-@click.pass_obj
-def sandbox_demobank_register(obj, public):
-    url = obj.access_api_url ("/testing/register")
-    try:
-        resp = post(
-            url,
-            json=dict(username=obj.username, password=obj.password, isPublic=public),
-        )
-    except Exception as e:
-        print(e)
-        print("Could not reach sandbox at " + url)
-        exit(1)
-    check_response_status(resp)
-
-@sandbox_demobank.command("new-ebicssubscriber",
-    help="Associate a new Ebics subscriber to a existing bank account."
-)
-@click.option("--host-id", help="Ebics host ID", required=True)
-@click.option("--partner-id", help="Ebics partner ID", required=True)
-@click.option("--user-id", help="Ebics user ID", required=True)
-@click.option(
-    "--bank-account",
-    help="Label of the bank account to associate with this Ebics subscriber",
-    required=True
-)
-@click.pass_obj
-def sandbox_demobank_ebicssubscriber(obj, host_id, partner_id, user_id, bank_account):
-    sandbox_base_url = obj.require_sandbox_base_url()
-    url = urljoin_nodrop(sandbox_base_url, "/ebics/subscribers")
-    try:
-        resp = post(url,
-            json=dict(
-                hostID=host_id,
-                partnerID=partner_id,
-                userID=user_id,
-                demobankAccountLabel=bank_account
-            ),
-            auth=auth.HTTPBasicAuth(
-                obj.username,
-                obj.password
-            ),
-        )
-    except Exception as e:
-        print(e)
-        print("Could not reach sandbox")
-        exit(1)
-    check_response_status(resp)
-
 @sandbox_bankaccount.command("list", help="List accounts")
 @click.pass_obj
 def bankaccount_list(obj):
     sandbox_base_url = obj.require_sandbox_base_url()
-    url = urljoin_nodrop(sandbox_base_url, f"/admin/bank-accounts")
+    url = urljoin(sandbox_base_url, f"/admin/bank-accounts")
     try:
-        resp = get(url,auth=auth.HTTPBasicAuth(obj.username, obj.password))
-    except Exception as e:
-        print(e)
+        resp = get(url)
+    except Exception:
         print("Could not reach sandbox")
         exit(1)
 
@@ -1342,13 +1155,12 @@ def bankaccount_list(obj):
 @click.pass_obj
 def transactions_list(obj, account_label):
     sandbox_base_url = obj.require_sandbox_base_url()
-    url = urljoin_nodrop(
+    url = urljoin(
         sandbox_base_url, f"/admin/bank-accounts/{account_label}/transactions"
     )
     try:
-        resp = get(url,auth=auth.HTTPBasicAuth(obj.username, obj.password))
-    except Exception as e:
-        print(e)
+        resp = get(url)
+    except Exception:
         print("Could not reach sandbox")
         exit(1)
 
@@ -1361,17 +1173,12 @@ def transactions_list(obj, account_label):
 @click.pass_obj
 def bankaccount_generate_transactions(obj, account_label):
     sandbox_base_url = obj.require_sandbox_base_url()
-    url = urljoin_nodrop(
-        sandbox_base_url,
-        f"/admin/bank-accounts/{account_label}/generate-transactions"
+    url = urljoin(
+        sandbox_base_url, f"/admin/bank-accounts/{account_label}/generate-transactions"
     )
     try:
-        resp = post(
-            url,
-            auth=auth.HTTPBasicAuth(obj.username, obj.password)
-        )
-    except Exception as e:
-        print(e)
+        resp = post(url)
+    except Exception:
         print("Could not reach sandbox")
         exit(1)
 
@@ -1399,7 +1206,7 @@ def simulate_incoming_transaction(
     subject,
 ):
     sandbox_base_url = obj.require_sandbox_base_url()
-    url = urljoin_nodrop(
+    url = urljoin(
         sandbox_base_url,
         f"/admin/bank-accounts/{account_name}/simulate-incoming-transaction",
     )
@@ -1411,13 +1218,8 @@ def simulate_incoming_transaction(
         subject=subject,
     )
     try:
-        resp = post(
-            url,
-            json=body,
-            auth=auth.HTTPBasicAuth(obj.username, obj.password)
-        )
-    except Exception as e:
-        print(e)
+        resp = post(url, json=body)
+    except Exception:
         print("Could not reach sandbox")
         exit(1)
 

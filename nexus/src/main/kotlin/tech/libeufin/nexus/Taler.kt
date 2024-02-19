@@ -22,6 +22,7 @@ package tech.libeufin.nexus
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import io.ktor.application.ApplicationCall
 import io.ktor.application.call
+import io.ktor.client.HttpClient
 import io.ktor.content.TextContent
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
@@ -39,7 +40,6 @@ import tech.libeufin.nexus.bankaccount.addPaymentInitiation
 import tech.libeufin.nexus.iso20022.*
 import tech.libeufin.nexus.server.*
 import tech.libeufin.util.*
-import java.net.URLEncoder
 import kotlin.math.abs
 import kotlin.math.min
 
@@ -51,7 +51,7 @@ data class TalerTransferRequest(
     val amount: String,
     val exchange_base_url: String,
     val wtid: String,
-    val credit_account: String // payto://-format
+    val credit_account: String
 )
 
 data class TalerTransferResponse(
@@ -92,7 +92,9 @@ data class TalerOutgoingHistory(
     var outgoing_transactions: MutableList<TalerOutgoingBankTransaction> = mutableListOf()
 )
 
-data class GnunetTimestamp(val t_s: Long)
+data class GnunetTimestamp(
+    val t_ms: Long
+)
 
 /**
  * Sort query results in descending order for negative deltas, and ascending otherwise.
@@ -103,6 +105,16 @@ fun <T : Entity<Long>> SizedIterable<T>.orderTaler(delta: Int): List<T> {
     } else {
         this.sortedBy { it.id }
     }
+}
+
+/**
+ * Build an IBAN payto URI.
+ */
+fun buildIbanPaytoUri(
+    iban: String, bic: String, name: String, direction: String
+): String {
+    val nameParam = if (direction == "DBIT") "sender-name" else "receiver-name"
+    return "payto://iban/$bic/$iban?$nameParam=$name"
 }
 
 /** Builds the comparison operator for history entries based on the sign of 'delta'  */
@@ -160,6 +172,27 @@ fun extractReservePubFromSubject(rawSubject: String): String? {
     return result.value.uppercase()
 }
 
+private fun getTalerFacadeState(fcid: String): TalerFacadeStateEntity {
+    val facade = FacadeEntity.find { FacadesTable.facadeName eq fcid }.firstOrNull() ?: throw NexusError(
+        HttpStatusCode.NotFound,
+        "Could not find facade '${fcid}'"
+    )
+    return TalerFacadeStateEntity.find {
+        TalerFacadeStateTable.facade eq facade.id.value
+    }.firstOrNull() ?: throw NexusError(
+        HttpStatusCode.NotFound,
+        "Could not find any state for facade: $fcid"
+    )
+}
+
+private fun getTalerFacadeBankAccount(fcid: String): NexusBankAccountEntity {
+    val facadeState = getTalerFacadeState(fcid)
+    return NexusBankAccountEntity.findByName(facadeState.bankAccount) ?: throw NexusError(
+        HttpStatusCode.NotFound,
+        "The facade: $fcid doesn't manage bank account: ${facadeState.bankAccount}"
+    )
+}
+
 /**
  * Handle a Taler Wire Gateway /transfer request.
  */
@@ -167,10 +200,11 @@ private suspend fun talerTransfer(call: ApplicationCall) {
     val transferRequest = call.receive<TalerTransferRequest>()
     val amountObj = parseAmount(transferRequest.amount)
     // FIXME: Right now we only parse the credit_account, should we also validate that it matches our account info?
-    // FIXME, another parse happens below; is this really useful here?
     parsePayto(transferRequest.credit_account)
     val facadeId = expectNonNull(call.parameters["fcid"])
     val opaqueRowId = transaction {
+        // FIXME: re-enable authentication (https://bugs.gnunet.org/view.php?id=6703)
+        // val exchangeUser = authenticateRequest(call.request)
         call.request.requirePermission(PermissionQuery("facade", facadeId, "facade.talerwiregateway.transfer"))
         val facade = FacadeEntity.find { FacadesTable.facadeName eq facadeId }.firstOrNull() ?: throw NexusError(
             HttpStatusCode.NotFound,
@@ -192,12 +226,12 @@ private suspend fun talerTransfer(call: ApplicationCall) {
                 )
             }
         }
-        val exchangeBankAccount = getFacadeBankAccount(facadeId)
+        val exchangeBankAccount = getTalerFacadeBankAccount(facadeId)
         val pain001 = addPaymentInitiation(
             Pain001Data(
                 creditorIban = creditorData.iban,
                 creditorBic = creditorData.bic,
-                creditorName = creditorData.receiverName ?: throw NexusError(
+                creditorName = creditorData.name ?: throw NexusError(
                     HttpStatusCode.BadRequest, "Payto did not mention account owner"
                 ),
                 subject = transferRequest.wtid,
@@ -226,7 +260,7 @@ private suspend fun talerTransfer(call: ApplicationCall) {
                      * Normally should point to the next round where the background
                      * routine will send new PAIN.001 data to the bank; work in progress..
                      */
-                    timestamp = GnunetTimestamp(System.currentTimeMillis() / 1000L),
+                    timestamp = roundTimestamp(GnunetTimestamp(System.currentTimeMillis())),
                     row_id = opaqueRowId
                 )
             ),
@@ -235,7 +269,11 @@ private suspend fun talerTransfer(call: ApplicationCall) {
     )
 }
 
-fun talerFilter(payment: NexusBankTransactionEntity, txDtls: TransactionDetails) {
+fun roundTimestamp(t: GnunetTimestamp): GnunetTimestamp {
+    return GnunetTimestamp(t.t_ms - (t.t_ms % 1000))
+}
+
+private fun ingestOneIncomingTransaction(payment: NexusBankTransactionEntity, txDtls: TransactionDetails) {
     val subject = txDtls.unstructuredRemittanceInformation
     val debtorName = txDtls.debtor?.name
     if (debtorName == null) {
@@ -291,12 +329,13 @@ fun talerFilter(payment: NexusBankTransactionEntity, txDtls: TransactionDetails)
         reservePublicKey = reservePub
         timestampMs = System.currentTimeMillis()
         debtorPaytoUri = buildIbanPaytoUri(
-            debtorIban, debtorAgent.bic, debtorName
+            debtorIban, debtorAgent.bic, debtorName, "DBIT"
         )
     }
+    return
 }
 
-fun maybeTalerRefunds(bankAccount: NexusBankAccountEntity, lastSeenId: Long) {
+fun maybePrepareRefunds(bankAccount: NexusBankAccountEntity, lastSeenId: Long) {
     logger.debug(
         "Searching refundable payments of account: ${bankAccount}," +
                 " after last seen transaction id: ${lastSeenId}"
@@ -342,8 +381,7 @@ fun maybeTalerRefunds(bankAccount: NexusBankAccountEntity, lastSeenId: Long) {
                         it[NexusBankTransactionsTable.bankAccount] == bankAccount.id,
                 "Cannot refund a _outgoing_ payment!"
             )
-            // FIXME: the amount to refund should be reduced, according to the bounce fee
-            // see bug #7116.
+            // FIXME: the amount to refund should be reduced, according to the refund fees.
             addPaymentInitiation(
                 Pain001Data(
                     creditorIban = debtorAccount.iban,
@@ -357,6 +395,71 @@ fun maybeTalerRefunds(bankAccount: NexusBankAccountEntity, lastSeenId: Long) {
             )
             logger.debug("Refund of transaction (AcctSvcrRef): ${paymentData.accountServicerRef} got prepared")
             it[TalerInvalidIncomingPaymentsTable.refunded] = true
+        }
+    }
+}
+
+/**
+ * Crawls the database to find ALL the users that have a Taler
+ * facade and process their histories respecting the TWG policy.
+ * The two main tasks it does are: (1) marking as invalid those
+ * payments with bad subject line, and (2) see if previously requested
+ * payments got booked as outgoing payments (and mark them accordingly
+ * in the local table).
+ */
+
+/**
+ *
+ */
+fun ingestTalerTransactions(bankAccountId: String) {
+    fun ingest(bankAccount: NexusBankAccountEntity, facade: FacadeEntity) {
+        logger.debug(
+            "Ingesting transactions for Taler facade ${facade.id.value}," +
+                    " and bank account: ${bankAccount.bankAccountName}"
+        )
+        val facadeState = getTalerFacadeState(facade.facadeName)
+        var lastId = facadeState.highestSeenMessageSerialId
+        NexusBankTransactionEntity.find {
+            /** Those with "our" bank account involved */
+            NexusBankTransactionsTable.bankAccount eq bankAccount.id.value and
+                    /** Those that are booked */
+                    (NexusBankTransactionsTable.status eq EntryStatus.BOOK) and
+                    /** Those that came later than the latest processed payment */
+                    (NexusBankTransactionsTable.id.greater(lastId))
+        }.orderBy(Pair(NexusBankTransactionsTable.id, SortOrder.ASC)).forEach {
+            // Incoming payment.
+            logger.debug("Taler checks payment: ${it.transactionJson}")
+            val tx = jacksonObjectMapper().readValue(
+                it.transactionJson, CamtBankAccountEntry::class.java
+            )
+            val details = tx.batches?.get(0)?.batchTransactions?.get(0)?.details
+            if (details == null) {
+                logger.warn("A void money movement made it through the ingestion: VERY strange")
+                return@forEach
+            }
+            when (tx.creditDebitIndicator) {
+                CreditDebitIndicator.CRDT -> {
+                    ingestOneIncomingTransaction(it, txDtls = details)
+                }
+                else -> Unit
+            }
+            lastId = it.id.value
+        }
+        try {
+            // FIXME: This currently does not do proper error handing.
+            maybePrepareRefunds(bankAccount, facadeState.highestSeenMessageSerialId)
+        } catch (e: Exception) {
+            logger.warn("sending refund payment failed", e);
+        }
+        facadeState.highestSeenMessageSerialId = lastId
+
+    }
+    // invoke ingestion for all the facades
+    transaction {
+        FacadeEntity.find { FacadesTable.type eq "taler-wire-gateway" }.forEach {
+            val facadeBankAccount = getTalerFacadeBankAccount(it.facadeName)
+            if (facadeBankAccount.bankAccountName == bankAccountId)
+                ingest(facadeBankAccount, it)
         }
     }
 }
@@ -379,7 +482,7 @@ private suspend fun historyOutgoing(call: ApplicationCall) {
     val history = TalerOutgoingHistory()
     transaction {
         /** Retrieve all the outgoing payments from the _clean Taler outgoing table_ */
-        val subscriberBankAccount = getFacadeBankAccount(facadeId)
+        val subscriberBankAccount = getTalerFacadeBankAccount(facadeId)
         val reqPayments = mutableListOf<TalerRequestedPaymentEntity>()
         val reqPaymentsWithUnconfirmed = TalerRequestedPaymentEntity.find {
             startCmpOp
@@ -396,12 +499,13 @@ private suspend fun historyOutgoing(call: ApplicationCall) {
                         row_id = it.id.value,
                         amount = it.amount,
                         wtid = it.wtid,
-                        date = GnunetTimestamp(it.preparedPayment.preparationDate / 1000L),
+                        date = GnunetTimestamp(it.preparedPayment.preparationDate),
                         credit_account = it.creditAccount,
                         debit_account = buildIbanPaytoUri(
                             subscriberBankAccount.iban,
                             subscriberBankAccount.bankCode,
                             subscriberBankAccount.accountHolder,
+                            "DBIT"
                         ),
                         exchange_base_url = "FIXME-to-request-along-subscriber-registration"
                     )
@@ -436,7 +540,7 @@ private suspend fun historyIncoming(call: ApplicationCall) {
                 history.incoming_transactions.add(
                     TalerIncomingBankTransaction(
                         // Rounded timestamp
-                        date = GnunetTimestamp(it.timestampMs / 1000L),
+                        date = GnunetTimestamp((it.timestampMs / 1000) * 1000),
                         row_id = it.id.value,
                         amount = "${it.payment.currency}:${it.payment.amount}",
                         reserve_pub = it.reservePublicKey,
@@ -444,6 +548,7 @@ private suspend fun historyIncoming(call: ApplicationCall) {
                             it.payment.bankAccount.iban,
                             it.payment.bankAccount.bankCode,
                             it.payment.bankAccount.accountHolder,
+                            "CRDT"
                         ),
                         debit_account = it.debtorPaytoUri
                     )
@@ -456,11 +561,12 @@ private suspend fun historyIncoming(call: ApplicationCall) {
 
 private fun getCurrency(facadeName: String): String {
     return transaction {
-        getFacadeState(facadeName).currency
+        getTalerFacadeState(facadeName).currency
     }
 }
 
-fun talerFacadeRoutes(route: Route) {
+fun talerFacadeRoutes(route: Route, httpClient: HttpClient) {
+
     route.get("/config") {
         val facadeId = ensureNonNull(call.parameters["fcid"])
         call.request.requirePermission(
