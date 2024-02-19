@@ -56,6 +56,11 @@ import java.net.URLEncoder
 import kotlin.system.exitProcess
 import java.net.URL
 
+import kotlinx.coroutines.asContextElement
+import kotlinx.coroutines.*
+import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.launch
+
 /**
  * Return facade state depending on the type.
  */
@@ -151,12 +156,22 @@ fun requireBankConnection(call: ApplicationCall, parameterKey: String): NexusBan
 }
 
 val client = HttpClient { followRedirects = true }
-// to transfer transactionId between asynchronous subroutine and server - 
-private val threadLocalTransactionId = ThreadLocal<String?>()
-public fun setTransactionId(transactionId: String?) {
-    println("....... SET "+transactionId    )
-    threadLocalTransactionId.asContextElement(transactionId)
+
+
+/**
+ * Sets the transaction ID within the current context.
+ *
+ * @param transactionId The transaction ID to be set.
+ */
+
+private var lastTransactionId: String?=null
+
+// set transactionID within the last tx id
+// NOT thread or coroutine safe 
+public fun setTransactionId(transactionId: String) {
+    lastTransactionId=transactionId
 }
+
 val nexusApp: Application.() -> Unit = {
     install(CallLogging) {
         this.level = Level.DEBUG
@@ -705,14 +720,12 @@ val nexusApp: Application.() -> Unit = {
         post("/bank-accounts/{accountid}/fetch-transactions") {
             requireSuperuser(call.request)
             val accountid = call.parameters["accountid"]
-            println("1.......................")
             if (accountid == null) {
                 throw NexusError(
                     HttpStatusCode.BadRequest,
                     "Account id missing"
                 )
             }
-            println("2.......................")
             val fetchSpec = if (call.request.hasBody()) {
                 call.receive<FetchSpecJson>()
             } else {
@@ -721,25 +734,21 @@ val nexusApp: Application.() -> Unit = {
                     null
                 )
             }
-            println("3.......................")
-            // wasa
+
             val ingestionResult = fetchBankAccountTransactions(client, fetchSpec, accountid)
-            println("4.......................")
-            val transactionId = threadLocalTransactionId.get()
-            println("5 tx id..........."+transactionId)
+            val transactionId = lastTransactionId
+            
             if (transactionId != null) {
-                println("6.......................")
                 call.response.header("Transaction-ID", transactionId)
                 logger.debug("transactionId:"+transactionId)
             } else {
-                println("7.......................")
                 logger.debug("no transactionId")
             }
-            println("8.......................")
+    
             call.respond(ingestionResult)
-            println("9.......................")
             return@post
         }
+      
 
         // Asks list of transactions ALREADY downloaded from the bank.
         get("/bank-accounts/{accountid}/transactions") {

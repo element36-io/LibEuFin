@@ -73,12 +73,12 @@ private suspend inline fun HttpClient.postToBank(url: String, body: String): Str
 sealed class EbicsDownloadResult
 
 class EbicsDownloadSuccessResult(
-    val orderData: ByteArray
+    val orderData: ByteArray,
     val transactionId: String
 ) : EbicsDownloadResult()
 
 /**
- * Some bank-technical error occured.
+ * Some bank-technical error occured.w
  */
 class EbicsDownloadBankErrorResult(
     val returnCode: EbicsReturnCode
@@ -87,6 +87,7 @@ class EbicsDownloadBankErrorResult(
 
 fun writeResponseToFile( transactionId: String, initResponseStr: String) {
     // Get base directory from environment variable TRACE_DIR
+    setTransactionId(transactionId)
     val baseDirectory = System.getenv("TRACE_DIR") ?: System.getProperty("user.dir")
 
     // Check if directory "trace" exists, create it if not
@@ -106,8 +107,6 @@ fun writeResponseToFile( transactionId: String, initResponseStr: String) {
     // Write response to file
     val file = File(fileName)
     file.writeText(initResponseStr)
-
-    setTransactionId(transactionId)
     println("Response written to file: $fileName")
 }
 
@@ -157,9 +156,9 @@ suspend fun doEbicsDownloadTransaction(
             HttpStatusCode.InternalServerError,
             "initial response must contain transaction ID"
         )
-        
+    // Write response to file wasa
     writeResponseToFile(transactionID,initResponseStr)
-
+    
     val encryptionInfo = initResponse.dataEncryptionInfo
         ?: throw NexusError(HttpStatusCode.InternalServerError, "initial response did not contain encryption info")
 

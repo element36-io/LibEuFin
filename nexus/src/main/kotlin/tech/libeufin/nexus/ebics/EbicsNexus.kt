@@ -121,7 +121,6 @@ private suspend fun fetchEbicsC5x(
         // re-throw in any other error case.
         throw e
     }
-
     when (historyType) {
         "C52" -> {
         }
