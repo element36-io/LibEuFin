@@ -1,4 +1,11 @@
 FROM zenika/kotlin:1.4.20-M2-jdk11-slim as build
+
+#
+#  IMPORTANT - you need to call ./bootstrap in order to inititalize the sub-repo of Libeufin
+#  Ohterwise the build will fail with
+#  failed to solve: failed to compute cache key: failed to calculate checksum  ..."/build-system/taler-build-scripts/configure": not found
+#
+
 RUN apt update
 # needed for nexus/sandbox
 RUN apt install -y python3 python3-pip git
